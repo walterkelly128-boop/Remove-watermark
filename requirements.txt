@@ -3,4 +3,3 @@ Pillow>=10.4,<12
 numpy>=1.26,<3
 opencv-python-headless>=4.10,<5
 simple-lama-inpainting==0.1.2
-easyocr==1.7.2
