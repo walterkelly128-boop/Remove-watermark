@@ -1,0 +1,14 @@
+services:
+  remove-watermark:
+    build: .
+    container_name: remove-watermark
+    ports:
+      - "7860:7860"
+    environment:
+      CUDA_VISIBLE_DEVICES: ""
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+    restart: unless-stopped
