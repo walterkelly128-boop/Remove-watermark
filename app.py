@@ -97,15 +97,15 @@ def to_mask_array(value, size):
     return acc
 
 
-def _editor_value(mask: Image.Image):
-    """Provide a single editable white-on-transparent mask layer."""
+def _editor_value(mask: Image.Image, background: Image.Image | None = None):
+    """Provide the original image as editor background plus an editable white mask layer."""
     mask = mask.convert("L")
     alpha = np.asarray(mask, dtype=np.uint8)
     layer = Image.new("RGBA", mask.size, (255, 255, 255, 0))
     layer.putalpha(Image.fromarray(alpha, mode="L"))
-    black = Image.new("RGB", mask.size, (0, 0, 0))
+    background = (background.convert("RGB") if background is not None else Image.new("RGB", mask.size, (0, 0, 0)))
     return {
-        "background": black,
+        "background": background,
         "layers": [layer],
         "composite": layer,
     }
@@ -123,7 +123,7 @@ def auto_detect(image):
         msg = "未找到高置信度候选区域。请直接在 Mask 编辑器中用画笔涂白需要去除的区域。"
     else:
         msg = f"已生成候选 Mask：{count:,} 个像素。白色区域可继续增加，橡皮擦可以直接取消误选。"
-    return preview, _editor_value(mask_img), msg
+    return preview, _editor_value(mask_img, pil), msg
 
 
 def restore(image, mask_value):
@@ -144,7 +144,7 @@ def clear_mask(image):
     if image is None:
         return None
     pil = image if isinstance(image, Image.Image) else Image.fromarray(image)
-    return _editor_value(Image.new("L", pil.size, 0))
+    return _editor_value(Image.new("L", pil.size, 0), pil)
 
 
 with gr.Blocks(title="AI 图片智能修复", theme=gr.themes.Soft()) as demo:
