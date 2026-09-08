@@ -35,6 +35,21 @@ def _b64_png(image: Image.Image, mode: str | None = None) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _mask_rle(mask: np.ndarray) -> str:
+    """Compact row-wise RLE: rle:w:h:row,start-end;... ."""
+    m = np.asarray(mask) > 30
+    h, w = m.shape
+    rows = []
+    for y in range(h):
+        xs = np.flatnonzero(m[y])
+        if xs.size == 0:
+            continue
+        starts = xs[np.r_[True, np.diff(xs) > 1]]
+        ends = xs[np.r_[np.diff(xs) > 1, True]]
+        rows.append(str(y) + ":" + ",".join(f"{int(a)}-{int(b)}" for a, b in zip(starts, ends)))
+    return f"rle:{w}:{h}:" + ";".join(rows)
+
+
 EDITOR_JS = r"""
 <script>
 (() => {
@@ -57,23 +72,49 @@ EDITOR_JS = r"""
   }
 
   function setNativeValue(el, value) {
-    const proto = el instanceof HTMLTextAreaElement
-      ? HTMLTextAreaElement.prototype
-      : HTMLInputElement.prototype;
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-    if (setter) setter.call(el, value);
-    else el.value = value;
+    if (setter) setter.call(el, value); else el.value = value;
+  }
+
+  // PNG base64 was unreliable for large images because the hidden Gradio
+  // textbox could lag behind the canvas. RLE is tiny for normal brush masks
+  // and is plain text, so Gradio can reliably serialize it.
+  function encodeRLE(state) {
+    const w = state.payload.w, h = state.payload.h;
+    const d = state.mctx.getImageData(0, 0, w, h).data;
+    const rows = [];
+    let count = 0;
+    for (let y = 0; y < h; y++) {
+      const runs = [];
+      let start = -1;
+      for (let x = 0; x < w; x++) {
+        const on = d[(y * w + x) * 4] > 30;
+        if (on && start < 0) start = x;
+        if ((!on || x === w - 1) && start >= 0) {
+          const end = on && x === w - 1 ? x : x - 1;
+          runs.push(start + '-' + end);
+          count += end - start + 1;
+          start = -1;
+        }
+      }
+      if (runs.length) rows.push(y + ':' + runs.join(','));
+    }
+    return {value: 'rle:' + w + ':' + h + ':' + rows.join(';'), count};
   }
 
   function syncMask(state) {
     const box = findMaskBox();
     if (!box || !state.maskCanvas) return false;
-    const value = state.maskCanvas.toDataURL('image/png');
-    // Important: use the native React/Gradio value setter. Assigning box.value
-    // directly can change the visual DOM value without changing Gradio state.
+    const encoded = encodeRLE(state);
+    const value = encoded.value;
     setNativeValue(box, value);
-    box.dispatchEvent(new Event('input', {bubbles:true}));
+    box.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:null}));
     box.dispatchEvent(new Event('change', {bubbles:true}));
+    box.dispatchEvent(new Event('blur', {bubbles:true}));
+    const label = state.root.querySelector('.wm-mask-count');
+    if (label) label.textContent = `Mask: ${encoded.count.toLocaleString()} px`;
+    state.lastMaskValue = value;
     return true;
   }
 
@@ -81,7 +122,6 @@ EDITOR_JS = r"""
     if (!root || root.dataset.ready === '1') return;
     const payload = b64json(root.dataset.payload || '');
     if (!payload || !payload.image || !payload.mask) return;
-
     const img = root.querySelector('.wm-image');
     const overlay = root.querySelector('.wm-canvas');
     if (!img || !overlay) return;
@@ -92,8 +132,7 @@ EDITOR_JS = r"""
     const mctx = maskCanvas.getContext('2d', {willReadFrequently:true});
     maskCanvas.width = payload.w;
     maskCanvas.height = payload.h;
-
-    const state = {maskCanvas, mctx, payload, overlay, ctx, img, mode:'paint', drawing:false, last:null, scale:1, undo:[], redo:[]};
+    const state = {root, maskCanvas, mctx, payload, overlay, ctx, img, mode:'paint', drawing:false, last:null, scale:1, undo:[], redo:[], lastMaskValue:''};
     root.__wmState = state;
 
     function fit() {
@@ -118,69 +157,41 @@ EDITOR_JS = r"""
       const out = ctx.createImageData(payload.w, payload.h);
       for (let i=0; i<d.length; i+=4) {
         const a = d[i] > 30 ? 105 : 0;
-        out.data[i] = 255;
-        out.data[i+1] = 40;
-        out.data[i+2] = 40;
-        out.data[i+3] = a;
+        out.data[i] = 255; out.data[i+1] = 40; out.data[i+2] = 40; out.data[i+3] = a;
       }
       ctx.putImageData(out, 0, 0);
     }
 
     function point(e) {
       const r = overlay.getBoundingClientRect();
-      return {
-        x: Math.max(0, Math.min(payload.w, (e.clientX-r.left) / state.scale)),
-        y: Math.max(0, Math.min(payload.h, (e.clientY-r.top) / state.scale))
-      };
+      return {x:Math.max(0,Math.min(payload.w,(e.clientX-r.left)/state.scale)), y:Math.max(0,Math.min(payload.h,(e.clientY-r.top)/state.scale))};
     }
 
     function snapshot() {
-      state.undo.push(mctx.getImageData(0, 0, payload.w, payload.h));
+      state.undo.push(mctx.getImageData(0,0,payload.w,payload.h));
       if (state.undo.length > 40) state.undo.shift();
       state.redo.length = 0;
     }
 
     function stroke(a,b) {
       mctx.save();
-      mctx.lineCap = 'round';
-      mctx.lineJoin = 'round';
-      mctx.lineWidth = Number(root.querySelector('.wm-size').value) || 32;
-      if (state.mode === 'paint') {
-        mctx.globalCompositeOperation = 'source-over';
-        mctx.strokeStyle = '#fff';
-      } else {
-        mctx.globalCompositeOperation = 'destination-out';
-        mctx.strokeStyle = '#000';
-      }
-      mctx.beginPath();
-      mctx.moveTo(a.x,a.y);
-      mctx.lineTo(b.x,b.y);
-      mctx.stroke();
-      mctx.restore();
+      mctx.lineCap='round'; mctx.lineJoin='round';
+      mctx.lineWidth=Number(root.querySelector('.wm-size').value)||32;
+      if (state.mode==='paint') { mctx.globalCompositeOperation='source-over'; mctx.strokeStyle='#fff'; }
+      else { mctx.globalCompositeOperation='destination-out'; mctx.strokeStyle='#000'; }
+      mctx.beginPath(); mctx.moveTo(a.x,a.y); mctx.lineTo(b.x,b.y); mctx.stroke(); mctx.restore();
       render();
     }
 
     overlay.addEventListener('pointerdown', e => {
-      e.preventDefault();
-      snapshot();
-      state.drawing = true;
-      state.last = point(e);
-      stroke(state.last, state.last);
-      overlay.setPointerCapture(e.pointerId);
+      e.preventDefault(); snapshot(); state.drawing=true; state.last=point(e); stroke(state.last,state.last); overlay.setPointerCapture(e.pointerId);
     });
-
     overlay.addEventListener('pointermove', e => {
-      if (!state.drawing) return;
-      e.preventDefault();
-      const q = point(e);
-      stroke(state.last,q);
-      state.last = q;
+      if (!state.drawing) return; e.preventDefault(); const q=point(e); stroke(state.last,q); state.last=q;
     });
-
     function end(e) {
       if (!state.drawing) return;
-      state.drawing = false;
-      state.last = null;
+      state.drawing=false; state.last=null;
       if (e && overlay.hasPointerCapture(e.pointerId)) overlay.releasePointerCapture(e.pointerId);
       syncMask(state);
     }
@@ -189,80 +200,49 @@ EDITOR_JS = r"""
     overlay.addEventListener('lostpointercapture', end);
 
     root.querySelectorAll('.wm-tool[data-mode]').forEach(btn => btn.addEventListener('click', () => {
-      state.mode = btn.dataset.mode;
-      root.querySelectorAll('.wm-tool[data-mode]').forEach(x => x.classList.remove('active'));
+      state.mode=btn.dataset.mode;
+      root.querySelectorAll('.wm-tool[data-mode]').forEach(x=>x.classList.remove('active'));
       btn.classList.add('active');
     }));
-
-    root.querySelector('.wm-size').addEventListener('input', e => {
-      root.querySelector('.wm-size-label').textContent = e.target.value;
-    });
-
+    root.querySelector('.wm-size').addEventListener('input', e => root.querySelector('.wm-size-label').textContent=e.target.value);
     root.querySelector('[data-action="undo"]').addEventListener('click', () => {
-      if (!state.undo.length) return;
-      state.redo.push(mctx.getImageData(0,0,payload.w,payload.h));
-      mctx.putImageData(state.undo.pop(),0,0);
-      render(); syncMask(state);
+      if (!state.undo.length) return; state.redo.push(mctx.getImageData(0,0,payload.w,payload.h)); mctx.putImageData(state.undo.pop(),0,0); render(); syncMask(state);
     });
-
     root.querySelector('[data-action="redo"]').addEventListener('click', () => {
-      if (!state.redo.length) return;
-      state.undo.push(mctx.getImageData(0,0,payload.w,payload.h));
-      mctx.putImageData(state.redo.pop(),0,0);
-      render(); syncMask(state);
+      if (!state.redo.length) return; state.undo.push(mctx.getImageData(0,0,payload.w,payload.h)); mctx.putImageData(state.redo.pop(),0,0); render(); syncMask(state);
     });
-
     root.querySelector('[data-action="clear"]').addEventListener('click', () => {
-      snapshot();
-      mctx.clearRect(0,0,payload.w,payload.h);
-      render(); syncMask(state);
+      snapshot(); mctx.clearRect(0,0,payload.w,payload.h); render(); syncMask(state);
     });
 
-    img.onload = () => fit();
-    img.src = 'data:image/png;base64,' + payload.image;
-
-    const maskImg = new Image();
-    maskImg.onload = () => {
-      mctx.clearRect(0,0,payload.w,payload.h);
-      mctx.drawImage(maskImg,0,0,payload.w,payload.h);
-      render();
-      syncMask(state);
-    };
-    maskImg.src = 'data:image/png;base64,' + payload.mask;
-
+    img.onload=()=>fit();
+    img.src='data:image/png;base64,'+payload.image;
+    const maskImg=new Image();
+    maskImg.onload=()=>{mctx.clearRect(0,0,payload.w,payload.h);mctx.drawImage(maskImg,0,0,payload.w,payload.h);render();syncMask(state);};
+    maskImg.src='data:image/png;base64,'+payload.mask;
     if (img.complete) fit();
 
-    // Last-second sync: Gradio serializes component state when the repair
-    // button is clicked. Sync the canvas immediately before that happens so
-    // the newest brush/eraser stroke can never be lost.
-    const repair = document.querySelector('#restore-btn button') || document.querySelector('#restore-btn');
-    if (repair) repair.addEventListener('click', () => syncMask(state), true);
+    const repair=document.querySelector('#restore-btn button')||document.querySelector('#restore-btn');
+    if (repair) repair.addEventListener('click',()=>syncMask(state),true);
   }
 
-  function scan() {
-    document.querySelectorAll('.wm-editor[data-payload]').forEach(install);
-  }
-
-  const observer = new MutationObserver(scan);
-  observer.observe(document.documentElement, {childList:true, subtree:true});
-  scan();
-  window.addEventListener('resize', scan);
+  function scan(){document.querySelectorAll('.wm-editor[data-payload]').forEach(install);}
+  const observer=new MutationObserver(scan);
+  observer.observe(document.documentElement,{childList:true,subtree:true});
+  scan(); window.addEventListener('resize',scan);
 })();
 </script>
 """
 
 
 def build_editor(image: Image.Image, mask: np.ndarray) -> str:
-    image = image.convert("RGB")
-    mask = np.where(np.asarray(mask) > 30, 255, 0).astype(np.uint8)
-    w, h = image.size
-    payload = {"w": w, "h": h, "image": _b64_png(image), "mask": _b64_png(Image.fromarray(mask, "L"))}
-    encoded = base64.b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
+    image=image.convert('RGB')
+    mask=np.where(np.asarray(mask)>30,255,0).astype(np.uint8)
+    w,h=image.size
+    payload={"w":w,"h":h,"image":_b64_png(image),"mask":_b64_png(Image.fromarray(mask,'L'))}
+    encoded=base64.b64encode(json.dumps(payload,separators=(',',':')).encode('utf-8')).decode('ascii')
     return f'''<div class="wm-editor" data-payload="{encoded}">
-  <div class="wm-stage">
-    <img class="wm-image" alt="原图" draggable="false">
-    <canvas class="wm-canvas"></canvas>
-  </div>
+  <div class="wm-stage"><img class="wm-image" alt="原图" draggable="false"><canvas class="wm-canvas"></canvas></div>
   <div class="wm-toolbar">
     <button type="button" class="wm-tool active" data-mode="paint">🖌 画笔</button>
     <button type="button" class="wm-tool" data-mode="erase">🧽 橡皮擦</button>
@@ -270,60 +250,72 @@ def build_editor(image: Image.Image, mask: np.ndarray) -> str:
     <button type="button" class="wm-tool" data-action="undo">↶ 撤销</button>
     <button type="button" class="wm-tool" data-action="redo">↷ 重做</button>
     <button type="button" class="wm-tool" data-action="clear">清空</button>
-    <span class="wm-help">红色 = Mask　画笔增加　橡皮擦删除</span>
+    <span class="wm-mask-count">Mask: 0 px</span><span class="wm-help">红色 = Mask　画笔增加　橡皮擦删除</span>
   </div>
 </div>'''
 
 
 def decode_mask(data, size):
     if not data:
-        return np.zeros((size[1], size[0]), dtype=np.uint8)
+        return np.zeros((size[1],size[0]),dtype=np.uint8)
     try:
-        if data.startswith("data:image"):
-            data = data.split(",", 1)[1]
-        arr = np.asarray(Image.open(io.BytesIO(base64.b64decode(data))).convert("L"))
-        if arr.shape != (size[1], size[0]):
-            arr = np.asarray(Image.fromarray(arr).resize(size, Image.Resampling.NEAREST))
-        return np.where(arr > 30, 255, 0).astype(np.uint8)
+        if data.startswith('rle:'):
+            parts=data.split(':',3)
+            if len(parts)!=4: raise ValueError('invalid RLE')
+            w,h=int(parts[1]),int(parts[2])
+            if (w,h)!=(size[0],size[1]): raise ValueError(f'RLE size {w}x{h} != image {size[0]}x{size[1]}')
+            mask=np.zeros((h,w),dtype=np.uint8)
+            rows=parts[3]
+            if rows:
+                for row in rows.split(';'):
+                    if not row: continue
+                    y_s,runs_s=row.split(':',1); y=int(y_s)
+                    if y<0 or y>=h: continue
+                    for run in runs_s.split(','):
+                        a_s,b_s=run.split('-',1); a=max(0,int(a_s)); b=min(w-1,int(b_s))
+                        if b>=a: mask[y,a:b+1]=255
+            return mask
+        if data.startswith('data:image'):
+            data=data.split(',',1)[1]
+        arr=np.asarray(Image.open(io.BytesIO(base64.b64decode(data))).convert('L'))
+        if arr.shape!=(size[1],size[0]): arr=np.asarray(Image.fromarray(arr).resize(size,Image.Resampling.NEAREST))
+        return np.where(arr>30,255,0).astype(np.uint8)
     except Exception:
         traceback.print_exc()
-        return np.zeros((size[1], size[0]), dtype=np.uint8)
+        return np.zeros((size[1],size[0]),dtype=np.uint8)
 
 
 def auto_detect(image):
-    if image is None:
-        return None, None, "⚠️ 请先上传图片。", ""
+    if image is None: return None,None,'⚠️ 请先上传图片。',''
     try:
-        pil = _pil(image)
-        mask = np.asarray(detect_candidates(pil), dtype=np.uint8)
-        if mask.shape != (pil.height, pil.width):
-            mask = np.asarray(Image.fromarray(mask, "L").resize(pil.size, Image.Resampling.NEAREST))
-        mask = np.where(mask > 30, 255, 0).astype(np.uint8)
-        return overlay_mask(pil, mask), build_editor(pil, mask), f"✅ 自动识别完成：{int(np.count_nonzero(mask)):,} 个 Mask 像素。", _b64_png(Image.fromarray(mask, "L"))
+        pil=_pil(image)
+        mask=np.asarray(detect_candidates(pil),dtype=np.uint8)
+        if mask.shape!=(pil.height,pil.width): mask=np.asarray(Image.fromarray(mask,'L').resize(pil.size,Image.Resampling.NEAREST))
+        mask=np.where(mask>30,255,0).astype(np.uint8)
+        return overlay_mask(pil,mask),build_editor(pil,mask),f'✅ 自动识别完成：{int(np.count_nonzero(mask)):,} 个 Mask 像素。',_mask_rle(mask)
     except Exception as exc:
         traceback.print_exc()
-        return None, None, f"❌ 自动识别失败：{type(exc).__name__}: {exc}", ""
+        return None,None,f'❌ 自动识别失败：{type(exc).__name__}: {exc}',''
 
 
 def reset_editor(image):
-    pil = _pil(image)
-    if pil is None:
-        return None, ""
-    mask = np.zeros((pil.height, pil.width), dtype=np.uint8)
-    return build_editor(pil, mask), _b64_png(Image.fromarray(mask, "L"))
+    pil=_pil(image)
+    if pil is None: return None,''
+    mask=np.zeros((pil.height,pil.width),dtype=np.uint8)
+    return build_editor(pil,mask),_mask_rle(mask)
 
 
-def restore(image, mask_data):
-    pil = _pil(image)
-    if pil is None:
-        raise gr.Error("请先上传图片。")
-    mask = decode_mask("data:image/png;base64," + mask_data if mask_data and not mask_data.startswith("data:") else mask_data, pil.size)
-    if not np.any(mask):
-        raise gr.Error("没有修复区域，请先自动识别或用画笔添加 Mask。")
-    return engine.run(pil, Image.fromarray(mask, "L"))
+def restore(image,mask_data):
+    pil=_pil(image)
+    if pil is None: raise gr.Error('请先上传图片。')
+    mask=decode_mask(mask_data,pil.size)
+    pixels=int(np.count_nonzero(mask))
+    if pixels==0: raise gr.Error('Mask 是空的：请先自动识别，或在编辑器中用画笔涂满水印区域。')
+    print(f'[restore] received mask: {pixels:,} px / {mask.size:,} ({pixels/mask.size:.2%})',flush=True)
+    return engine.run(pil,Image.fromarray(mask,'L'))
 
 
-CSS = '''
+CSS='''
 .wm-editor{border:1px solid #d9d9d9;border-radius:12px;padding:12px;background:#fafafa}
 .wm-stage{position:relative;margin:0 auto;overflow:hidden;line-height:0;background:#222;border-radius:8px;user-select:none}
 .wm-image{position:absolute;left:0;top:0;display:block;max-width:none;object-fit:fill;user-select:none;-webkit-user-drag:none}
@@ -331,33 +323,31 @@ CSS = '''
 .wm-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
 .wm-tool{border:1px solid #ccc;background:white;border-radius:7px;padding:7px 12px;cursor:pointer}
 .wm-tool.active{background:#111;color:white}
-.wm-size{width:130px}
-.wm-help{color:#666;font-size:13px;margin-left:auto}
+.wm-size{width:130px}.wm-mask-count{font-weight:600;color:#c62828}.wm-help{color:#666;font-size:13px;margin-left:auto}
 '''
 
-with gr.Blocks(title="AI 图片智能修复", theme=gr.themes.Soft(), css=CSS, head=EDITOR_JS) as demo:
-    gr.Markdown("# AI 图片智能修复\n自动识别候选区域 + 自定义 Mask 编辑 + CPU AI Inpainting")
-    gr.Markdown("自动识别后，右侧显示检测预览；下方编辑器显示原图 + 红色 Mask，可直接画笔增加或橡皮擦删除。")
+with gr.Blocks(title='AI 图片智能修复',theme=gr.themes.Soft(),css=CSS,head=EDITOR_JS) as demo:
+    gr.Markdown('# AI 图片智能修复\n自动识别候选区域 + 自定义 Mask 编辑 + CPU AI Inpainting')
+    gr.Markdown('自动识别后，右侧显示检测预览；下方编辑器显示原图 + 红色 Mask，可直接画笔增加或橡皮擦删除。')
     with gr.Row():
         with gr.Column():
-            source = gr.Image(label="原图", type="pil")
+            source=gr.Image(label='原图',type='pil')
             with gr.Row():
-                auto_btn = gr.Button("✨ 自动识别候选区域", variant="primary")
-                clear_btn = gr.Button("清除 Mask")
-            status = gr.Markdown("上传图片后开始。")
+                auto_btn=gr.Button('✨ 自动识别候选区域',variant='primary')
+                clear_btn=gr.Button('清除 Mask')
+            status=gr.Markdown('上传图片后开始。')
         with gr.Column():
-            preview = gr.Image(label="自动识别预览（红色=候选区域）", type="pil")
-    gr.Markdown("## Mask 编辑器")
-    editor = gr.HTML(label="Mask 编辑器")
-    mask_data = gr.Textbox(label="", elem_id="mask-data", visible=False)
-    restore_btn = gr.Button("🚀 AI 智能修复", variant="primary", elem_id="restore-btn")
-    result = gr.Image(label="修复结果", type="pil", format="png")
+            preview=gr.Image(label='自动识别预览（红色=候选区域）',type='pil')
+    gr.Markdown('## Mask 编辑器')
+    editor=gr.HTML(label='Mask 编辑器')
+    mask_data=gr.Textbox(label='',elem_id='mask-data',visible=False)
+    restore_btn=gr.Button('🚀 AI 智能修复',variant='primary',elem_id='restore-btn')
+    result=gr.Image(label='修复结果',type='pil',format='png')
 
-    source.change(reset_editor, inputs=source, outputs=[editor, mask_data])
-    auto_btn.click(auto_detect, inputs=source, outputs=[preview, editor, status, mask_data], show_progress="minimal")
-    clear_btn.click(reset_editor, inputs=source, outputs=[editor, mask_data])
-    restore_btn.click(restore, inputs=[source, mask_data], outputs=result)
+    source.change(reset_editor,inputs=source,outputs=[editor,mask_data])
+    auto_btn.click(auto_detect,inputs=source,outputs=[preview,editor,status,mask_data],show_progress='minimal')
+    clear_btn.click(reset_editor,inputs=source,outputs=[editor,mask_data])
+    restore_btn.click(restore,inputs=[source,mask_data],outputs=result)
 
-
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860, show_error=True)
+if __name__=='__main__':
+    demo.launch(server_name='0.0.0.0',server_port=7860,show_error=True)
