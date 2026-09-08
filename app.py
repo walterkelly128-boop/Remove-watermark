@@ -119,7 +119,7 @@ def auto_detect(image):
         msg = "未找到高置信度候选区域。请直接在 Mask 编辑器中用画笔涂白需要去除的区域。"
     else:
         msg = f"已生成候选 Mask：{count:,} 个像素。白色区域可继续增加，橡皮擦可以直接取消误选。"
-    return preview, _editor_value(mask_img, pil), msg
+    return preview, gr.update(value=_editor_value(mask_img, pil)), msg
 
 
 def restore(image, mask_value):
@@ -140,7 +140,7 @@ def clear_mask(image):
     if image is None:
         return None
     pil = image if isinstance(image, Image.Image) else Image.fromarray(image)
-    return _editor_value(Image.new("L", pil.size, 0), pil)
+    return gr.update(value=_editor_value(Image.new("L", pil.size, 0), pil))
 
 
 with gr.Blocks(title="AI 图片智能修复", theme=gr.themes.Soft()) as demo:
@@ -160,7 +160,7 @@ with gr.Blocks(title="AI 图片智能修复", theme=gr.themes.Soft()) as demo:
         label="Mask 编辑器（原图底图 + 白色修复区域）",
         type="pil",
         image_mode="RGBA",
-        sources=["upload"],
+        sources=[],
         brush=gr.Brush(colors=["#ffffff"], default_size=24, color_mode="fixed"),
         eraser=gr.Eraser(default_size=24),
         height=520,
