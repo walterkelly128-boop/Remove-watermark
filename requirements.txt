@@ -1,5 +1,5 @@
 gradio==5.44.1
-Pillow>=9.5,<10.0
-numpy>=1.26,<3
-opencv-python-headless>=4.10,<5
+Pillow==9.5.0
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
 simple-lama-inpainting==0.1.2
