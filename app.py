@@ -44,8 +44,9 @@ def build_editor(image: Image.Image, mask: np.ndarray) -> str:
     image_url = _png_data(image)
     mask_url = "data:image/png;base64," + _mask_b64(mask)
     w, h = image.size
-    payload = json.dumps({"w": w, "h": h, "image": image_url, "mask": mask_url})
-    return f'''<div class="wm-editor" data-payload='{payload.replace("'", "&apos;")}'>
+    payload = json.dumps({"w": w, "h": h, "image": image_url, "mask": mask_url}, ensure_ascii=False)
+    safe_payload = payload.replace("&", "&amp;").replace("'", "&apos;")
+    return f'''<div class="wm-editor" data-payload='{safe_payload}'>
 <canvas class="wm-canvas"></canvas>
 <div class="wm-toolbar">
 <button type="button" class="wm-tool active" data-mode="paint">🖌 画笔</button>
@@ -60,23 +61,24 @@ def build_editor(image: Image.Image, mask: np.ndarray) -> str:
 (() => {{
  const root = document.currentScript.previousElementSibling;
  if (!root || root.dataset.ready) return; root.dataset.ready='1';
- const p = JSON.parse(root.dataset.payload.replaceAll('&apos;', "'"));
+ const p = JSON.parse(root.dataset.payload.replaceAll('&amp;', '&').replaceAll('&apos;', "'"));
  const c = root.querySelector('.wm-canvas'), ctx=c.getContext('2d');
  const img=new Image(), mask=new Image();
  let mode='paint', drawing=false, last=null, undo=[], redo=[];
- let scale=1, ox=0, oy=0, maskCanvas=document.createElement('canvas'), mctx=maskCanvas.getContext('2d');
+ let scale=1, maskCanvas=document.createElement('canvas'), mctx=maskCanvas.getContext('2d');
  img.onload=()=>{{ fit(); mask.src=p.mask; }};
- mask.onload=()=>{{ maskCanvas.width=p.w; maskCanvas.height=p.h; mctx.drawImage(mask,0,0,p.w,p.h); draw(); sync(); }};
+ mask.onload=()=>{{ maskCanvas.width=p.w; maskCanvas.height=p.h; mctx.clearRect(0,0,p.w,p.h); mctx.drawImage(mask,0,0,p.w,p.h); draw(); sync(); }};
  img.src=p.image;
- function fit(){{ const maxW=Math.min(root.clientWidth||900,1100), maxH=560; scale=Math.min(maxW/p.w,maxH/p.h); c.width=Math.round(p.w*scale); c.height=Math.round(p.h*scale); draw(); }}
+ function fit(){{ const maxW=Math.min(root.clientWidth||900,1100), maxH=560; scale=Math.min(maxW/p.w,maxH/p.h); c.width=Math.max(1,Math.round(p.w*scale)); c.height=Math.max(1,Math.round(p.h*scale)); draw(); }}
  function pos(e){{ const r=c.getBoundingClientRect(); return {{x:(e.clientX-r.left)/scale,y:(e.clientY-r.top)/scale}}; }}
- function draw(){{ if(!img.complete)return; ctx.clearRect(0,0,c.width,c.height); ctx.drawImage(img,0,0,c.width,c.height); ctx.save(); ctx.globalAlpha=.42; const temp=document.createElement('canvas');temp.width=p.w;temp.height=p.h;const t=temp.getContext('2d');t.drawImage(maskCanvas,0,0);ctx.drawImage(temp,0,0,c.width,c.height);ctx.restore(); }}
+ function draw(){{ if(!img.complete)return; ctx.clearRect(0,0,c.width,c.height); ctx.drawImage(img,0,0,c.width,c.height); ctx.save(); ctx.globalAlpha=.42; ctx.drawImage(maskCanvas,0,0,c.width,c.height); ctx.restore(); }}
  function snapshot(){{ undo.push(maskCanvas.toDataURL()); if(undo.length>30)undo.shift(); redo=[]; }}
- function restoreData(url){{ const x=new Image();x.onload=()=>{{mctx.clearRect(0,0,p.w,p.h);mctx.drawImage(x,0,0,p.w,p.h);draw();sync();}};x.src=url; }}
- function stroke(a,b){{ mctx.save();mctx.lineCap='round';mctx.lineJoin='round';mctx.lineWidth=document.querySelector('.wm-size').value; if(mode==='paint'){{mctx.globalCompositeOperation='source-over';mctx.strokeStyle='rgba(255,255,255,1)';}}else{{mctx.globalCompositeOperation='destination-out';mctx.strokeStyle='rgba(0,0,0,1)';}} mctx.beginPath();mctx.moveTo(a.x,a.y);mctx.lineTo(b.x,b.y);mctx.stroke();mctx.restore();draw(); }}
+ function restoreData(url){{ const x=new Image(); x.onload=()=>{{mctx.clearRect(0,0,p.w,p.h);mctx.drawImage(x,0,0,p.w,p.h);draw();sync();}}; x.src=url; }}
+ function stroke(a,b){{ mctx.save(); mctx.lineCap='round'; mctx.lineJoin='round'; mctx.lineWidth=Number(root.querySelector('.wm-size').value); if(mode==='paint'){{mctx.globalCompositeOperation='source-over';mctx.strokeStyle='rgba(255,0,0,1)';}} else {{mctx.globalCompositeOperation='destination-out';mctx.strokeStyle='rgba(0,0,0,1)';}} mctx.beginPath();mctx.moveTo(a.x,a.y);mctx.lineTo(b.x,b.y);mctx.stroke();mctx.restore();draw(); }}
  c.addEventListener('pointerdown',e=>{{e.preventDefault();snapshot();drawing=true;last=pos(e);stroke(last,last);c.setPointerCapture(e.pointerId);}});
  c.addEventListener('pointermove',e=>{{if(!drawing)return;const q=pos(e);stroke(last,q);last=q;}});
- c.addEventListener('pointerup',()=>{{drawing=false;sync();}}); c.addEventListener('pointercancel',()=>{{drawing=false;sync();}});
+ const end=e=>{{drawing=false;if(e&&c.hasPointerCapture(e.pointerId))c.releasePointerCapture(e.pointerId);sync();}};
+ c.addEventListener('pointerup',end); c.addEventListener('pointercancel',end);
  root.querySelectorAll('.wm-tool').forEach(b=>b.onclick=()=>{{if(b.dataset.mode){{mode=b.dataset.mode;root.querySelectorAll('.wm-tool').forEach(x=>x.classList.remove('active'));b.classList.add('active');}} else if(b.dataset.action==='clear'){{snapshot();mctx.clearRect(0,0,p.w,p.h);draw();sync();}} else if(b.dataset.action==='undo'&&undo.length){{redo.push(maskCanvas.toDataURL());restoreData(undo.pop());}} else if(b.dataset.action==='redo'&&redo.length){{undo.push(maskCanvas.toDataURL());restoreData(redo.pop());}}}});
  const range=root.querySelector('.wm-size'); range.oninput=()=>root.querySelector('.wm-size-label').textContent=range.value;
  function sync(){{const b=maskCanvas.toDataURL('image/png'); const box=document.querySelector('#mask-data textarea')||document.querySelector('#mask-data input'); if(box){{box.value=b;box.dispatchEvent(new Event('input',{{bubbles:true}}));box.dispatchEvent(new Event('change',{{bubbles:true}}));}}}}
@@ -102,18 +104,19 @@ def decode_mask(data, size):
 
 def auto_detect(image):
     if image is None:
-        return None, "⚠️ 请先上传图片。", ""
+        return None, None, "⚠️ 请先上传图片。", ""
     try:
         pil = _pil(image)
         mask = np.asarray(detect_candidates(pil), dtype=np.uint8)
         if mask.shape != (pil.height, pil.width):
             mask = np.asarray(Image.fromarray(mask, "L").resize(pil.size, Image.Resampling.NEAREST))
         mask = np.where(mask > 30, 255, 0).astype(np.uint8)
+        preview_image = overlay_mask(pil, mask)
         count = int(np.count_nonzero(mask))
-        return build_editor(pil, mask), f"✅ 自动识别完成：{count:,} 个 Mask 像素。", _mask_b64(mask)
+        return preview_image, build_editor(pil, mask), f"✅ 自动识别完成：{count:,} 个 Mask 像素。", _mask_b64(mask)
     except Exception as exc:
         traceback.print_exc()
-        return None, f"❌ 自动识别失败：{type(exc).__name__}: {exc}", ""
+        return None, None, f"❌ 自动识别失败：{type(exc).__name__}: {exc}", ""
 
 
 def reset_editor(image):
@@ -140,7 +143,7 @@ CSS = '''
 
 with gr.Blocks(title="AI 图片智能修复", theme=gr.themes.Soft(), css=CSS) as demo:
     gr.Markdown("# AI 图片智能修复\n自动识别候选区域 + 自定义 Mask 编辑 + CPU AI Inpainting")
-    gr.Markdown("现在使用独立 Canvas 编辑器，不再依赖 Gradio ImageEditor 的橡皮擦。")
+    gr.Markdown("使用独立 Canvas 编辑器：自动识别后右侧显示检测预览，同时下方可以直接画笔/橡皮擦编辑 Mask。")
     with gr.Row():
         with gr.Column():
             source = gr.Image(label="原图", type="pil")
@@ -149,7 +152,7 @@ with gr.Blocks(title="AI 图片智能修复", theme=gr.themes.Soft(), css=CSS) a
                 clear_btn = gr.Button("清除 Mask")
             status = gr.Markdown("上传图片后开始。")
         with gr.Column():
-            preview = gr.Image(label="自动识别预览", type="pil")
+            preview = gr.Image(label="自动识别预览（红色=候选区域）", type="pil")
     gr.Markdown("## Mask 编辑器")
     editor = gr.HTML(label="Mask 编辑器")
     mask_data = gr.Textbox(label="", elem_id="mask-data", visible=False)
@@ -158,7 +161,7 @@ with gr.Blocks(title="AI 图片智能修复", theme=gr.themes.Soft(), css=CSS) a
     result = gr.Image(label="修复结果", type="pil", format="png")
 
     source.change(reset_editor, inputs=source, outputs=[editor, mask_data])
-    auto_btn.click(auto_detect, inputs=source, outputs=[editor, status, mask_data], show_progress="minimal")
+    auto_btn.click(auto_detect, inputs=source, outputs=[preview, editor, status, mask_data], show_progress="minimal")
     clear_btn.click(reset_editor, inputs=source, outputs=[editor, mask_data])
     restore_btn.click(restore, inputs=[source, mask_data], outputs=result)
 
