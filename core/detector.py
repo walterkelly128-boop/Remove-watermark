@@ -5,49 +5,67 @@ import numpy as np
 from PIL import Image
 
 
+def _kernel(size: int, shape=cv2.MORPH_ELLIPSE):
+    size = max(3, int(size))
+    if size % 2 == 0:
+        size += 1
+    return cv2.getStructuringElement(shape, (size, size))
+
+
 def _dilate(mask: np.ndarray, k: int) -> np.ndarray:
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-    return cv2.dilate(mask, kernel, iterations=1)
+    return cv2.dilate(mask, _kernel(k), iterations=1)
+
+
+def _tight_component_mask(binary: np.ndarray, h: int, w: int) -> np.ndarray:
+    """Keep compact text-like components, but preserve their actual shapes."""
+    out = np.zeros((h, w), np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+    for i in range(1, n):
+        x, y, cw, ch, area = stats[i]
+        if area < max(8, int(h * w * 0.000002)):
+            continue
+        if area > h * w * 0.015:
+            continue
+        ratio = cw / max(ch, 1)
+        if ratio < 0.25 or ratio > 35:
+            continue
+        near_edge = x < w * 0.22 or y < h * 0.22 or x + cw > w * 0.78 or y + ch > h * 0.78
+        if not near_edge:
+            continue
+        if ch > h * 0.075 or cw > w * 0.55:
+            continue
+        component = (labels == i).astype(np.uint8) * 255
+        out = np.maximum(out, component)
+    return out
 
 
 def detect_candidates(image: Image.Image) -> np.ndarray:
-    """Return a conservative binary mask for likely overlay/watermark regions.
+    """Detect likely Gemini-style corner watermark pixels with a tight mask.
 
-    The detector focuses on text-like connected components and corner overlays.
-    It deliberately avoids treating every piece of text in the image as a target.
+    The important change is that the detector no longer fills large bounding
+    rectangles around text. The inpainting model gets an expanded private mask
+    for context, while the returned mask remains close to the actual watermark.
     """
     rgb = np.asarray(image.convert("RGB"))
     h, w = rgb.shape[:2]
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
 
-    # OCR-like text candidates using adaptive thresholding.
-    bw = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 9
-    )
-    bw = cv2.morphologyEx(
-        bw, cv2.MORPH_OPEN,
-        cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-    )
-
     mask = np.zeros((h, w), np.uint8)
-    contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Prefer small text-like components, especially near image edges/corners.
-    for c in contours:
-        x, y, cw, ch = cv2.boundingRect(c)
-        area = cw * ch
-        if area < 12 or area > (w * h * 0.08):
-            continue
-        ratio = cw / max(ch, 1)
-        if ratio < 0.35 or ratio > 25:
-            continue
-        near_edge = x < w * 0.18 or y < h * 0.18 or x + cw > w * 0.82 or y + ch > h * 0.82
-        if near_edge and ch < h * 0.10 and cw < w * 0.65:
-            cv2.rectangle(mask, (x, y), (x + cw, y + ch), 255, -1)
+    # Multi-scale local contrast catches pale/white watermark strokes that a
+    # single adaptive threshold can miss.
+    for block in (21, 35, 51):
+        bw = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, block, 7,
+        )
+        bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, _kernel(2, cv2.MORPH_RECT))
+        mask = np.maximum(mask, _tight_component_mask(bw, h, w))
 
-    # A small corner ROI catches compact Gemini-style corner marks better than OCR alone.
-    corner_w = max(48, int(w * 0.18))
-    corner_h = max(48, int(h * 0.12))
+    # Corner-specific edge detection. Keep the edge pixels themselves rather
+    # than replacing them with coarse rectangles.
+    corner_w = max(64, int(w * 0.22))
+    corner_h = max(64, int(h * 0.16))
     rois = [
         (w - corner_w, h - corner_h, w, h),
         (0, h - corner_h, corner_w, h),
@@ -58,21 +76,36 @@ def detect_candidates(image: Image.Image) -> np.ndarray:
         roi = gray[y1:y2, x1:x2]
         if roi.size == 0:
             continue
-        edges = cv2.Canny(roi, 80, 180)
-        # Only mark compact edge clusters; do not mask the whole corner.
+        edges = cv2.Canny(roi, 45, 130)
+        # Close small gaps in glyphs, then retain only compact components.
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, _kernel(3))
         n, labels, stats, _ = cv2.connectedComponentsWithStats(edges, 8)
         for i in range(1, n):
             x, y, cw, ch, area = stats[i]
-            if 8 <= area <= roi.size * 0.08 and 2 <= ch <= roi.shape[0] * 0.8:
-                cv2.rectangle(mask, (x1 + x, y1 + y), (x1 + x + cw, y1 + y + ch), 255, -1)
+            if not (10 <= area <= roi.size * 0.035):
+                continue
+            if ch < 3 or ch > roi.shape[0] * 0.55:
+                continue
+            if cw > roi.shape[1] * 0.75:
+                continue
+            component = (labels == i).astype(np.uint8) * 255
+            mask[y1:y2, x1:x2] = np.maximum(mask[y1:y2, x1:x2], component)
 
-    mask = _dilate(mask, max(3, int(round(min(w, h) / 700))))
+    # Join nearby glyph strokes without creating a large filled rectangle.
+    join = max(3, int(round(min(w, h) / 900)))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, _kernel(join, cv2.MORPH_ELLIPSE))
+
+    # Only a very small safety dilation is returned. This is deliberately much
+    # smaller than the old bounding-box approach to prevent halo artifacts.
+    safety = max(1, int(round(min(w, h) / 1800)))
+    if safety > 1:
+        mask = _dilate(mask, safety)
+
     return mask
 
 
 def overlay_mask(image: Image.Image, mask: np.ndarray) -> Image.Image:
     base = np.asarray(image.convert("RGB")).copy()
     m = mask > 0
-    # Red preview without changing the underlying image data.
     base[m] = (base[m] * 0.35 + np.array([255, 40, 40]) * 0.65).astype(np.uint8)
     return Image.fromarray(base)
