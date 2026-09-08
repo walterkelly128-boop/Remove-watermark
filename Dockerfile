@@ -13,7 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt .
-RUN python -m pip install --upgrade pip setuptools wheel && python -m pip install --prefer-binary -r requirements.txt
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && python -m pip install --only-binary=:all: -r requirements.txt
 
 COPY app.py .
 COPY core ./core
