@@ -7,23 +7,22 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image, ImageFilter
+from dotenv import load_dotenv
 from google import genai
 
+# Load .env automatically when running locally. Docker Compose also injects
+# GEMINI_API_KEY from .env into the container environment.
+load_dotenv()
 
 DEFAULT_MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
 
 
 class GeminiInpaintEngine:
-    """Gemini image-edit based local-region restoration.
-
-    The input image and a red mask reference are sent together. The model is
-    explicitly instructed to change only the masked region and preserve the
-    remainder of the image.
-    """
+    """Gemini image-edit based local-region restoration."""
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "").strip()
-        self.model = model or DEFAULT_MODEL
+        self.model = model or os.environ.get("GEMINI_IMAGE_MODEL", DEFAULT_MODEL)
         self._client = None
 
     @property
@@ -32,7 +31,7 @@ class GeminiInpaintEngine:
 
     def _get_client(self):
         if not self.api_key:
-            raise RuntimeError("未配置 GEMINI_API_KEY。请在 Docker 环境变量中设置 Gemini API Key。")
+            raise RuntimeError("未配置 GEMINI_API_KEY。请在项目根目录 .env 中设置 Gemini API Key。")
         if self._client is None:
             self._client = genai.Client(api_key=self.api_key)
         return self._client
@@ -45,15 +44,12 @@ class GeminiInpaintEngine:
 
     @staticmethod
     def _make_mask_reference(image: Image.Image, mask: np.ndarray) -> Image.Image:
-        """Create a clean reference image where only the selected area is red."""
         rgb = np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
         m = np.asarray(mask) > 30
         if m.shape != rgb.shape[:2]:
             m = np.asarray(Image.fromarray((m * 255).astype(np.uint8)).resize(image.size, Image.Resampling.NEAREST)) > 30
-        # A soft but unmistakable red overlay helps the model understand the edit area.
         rgb[m] = (255, 40, 40)
-        ref = Image.fromarray(rgb, "RGB")
-        return ref
+        return Image.fromarray(rgb, "RGB")
 
     @staticmethod
     def _crop_region(image: Image.Image, mask: np.ndarray, padding: float = 2.5):
@@ -71,9 +67,7 @@ class GeminiInpaintEngine:
         left = max(0, min(cx - cw // 2, w - cw))
         top = max(0, min(cy - ch // 2, h - ch))
         right, bottom = left + cw, top + ch
-        crop = image.crop((left, top, right, bottom))
-        crop_mask = m[top:bottom, left:right]
-        return crop, crop_mask, (left, top, right, bottom)
+        return image.crop((left, top, right, bottom)), m[top:bottom, left:right], (left, top, right, bottom)
 
     def repair(self, image: Image.Image, mask: np.ndarray, use_crop: bool = True) -> Image.Image:
         image = image.convert("RGB")
@@ -81,7 +75,6 @@ class GeminiInpaintEngine:
         if not np.any(mask):
             raise ValueError("Mask 为空")
 
-        # Expand the mask slightly so anti-aliased watermark edges are also removed.
         expanded = Image.fromarray(mask, "L").filter(ImageFilter.MaxFilter(9))
         mask = np.asarray(expanded, dtype=np.uint8)
 
@@ -135,13 +128,8 @@ Return the restored image only."""
 
         if use_crop:
             result = image.copy()
-            result.paste(repaired, box)
-            # Blend only the expanded mask boundary back into the original to
-            # avoid a visible rectangular crop seam.
             alpha = Image.fromarray(mask, "L").filter(ImageFilter.GaussianBlur(2.0))
-            original_crop = image.crop(box)
             result.paste(repaired, box, alpha)
-            # Keep the untouched source outside the actual expanded mask.
             return result
 
         alpha = Image.fromarray(mask, "L").filter(ImageFilter.GaussianBlur(2.0))
