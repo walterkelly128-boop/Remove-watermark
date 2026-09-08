@@ -27,7 +27,13 @@ CHUNK_SIZE = 1024 * 1024
 
 
 class InpaintEngine:
-    """CPU-only LaMa engine with tight final compositing."""
+    """CPU-only LaMa inpainting engine.
+
+    The manual editor supplies a binary mask where white means "remove".
+    LaMa is given an expanded mask for better edge reconstruction, while the
+    final image is composited with a slightly expanded version of the user's
+    mask so semi-transparent watermark pixels are not left behind.
+    """
 
     def __init__(self, model_path: Optional[Path] = None):
         self.model_path = Path(model_path or MODEL_PATH)
@@ -123,17 +129,24 @@ class InpaintEngine:
         ys, xs = np.where(mask > 0)
         if len(xs) == 0:
             raise ValueError("Mask is empty")
+
         h, w = mask.shape
         x1, x2 = int(xs.min()), int(xs.max()) + 1
         y1, y2 = int(ys.min()), int(ys.max()) + 1
         target = max(x2 - x1, y2 - y1, 24)
-        # More context for texture/structure, but the final composite will only
-        # touch the original tight mask.
-        side = min(max(int(target * 3.2), 96), max(h, w))
+
+        # Keep substantially more surrounding context than the old 3.2x crop.
+        # This is especially important for text/logos over textured backgrounds.
+        side = min(max(int(target * 4.0), 128), max(h, w))
+        side = max(side, min(h, w)) if min(h, w) < 128 else side
+        side = min(side, max(h, w))
+
         cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-        left = max(0, min(cx - side // 2, w - side))
-        top = max(0, min(cy - side // 2, h - side))
-        right, bottom = min(w, left + side), min(h, top + side)
+        left = max(0, min(cx - side // 2, max(0, w - side)))
+        top = max(0, min(cy - side // 2, max(0, h - side)))
+        right = min(w, left + side)
+        bottom = min(h, top + side)
+
         return image[top:bottom, left:right], mask[top:bottom, left:right], (left, top, right, bottom)
 
     @staticmethod
@@ -143,44 +156,121 @@ class InpaintEngine:
             cv2.resize(mask, (512, 512), interpolation=cv2.INTER_NEAREST),
         )
 
+    @staticmethod
+    def _normalise_output(output: np.ndarray) -> np.ndarray:
+        """Convert common ONNX LaMa output layouts/ranges to uint8 RGB."""
+        repaired = np.asarray(output[0])
+        if repaired.ndim != 3:
+            raise RuntimeError(f"Unexpected LaMa output shape: {repaired.shape}")
+
+        if repaired.shape[0] == 3:
+            repaired = np.transpose(repaired, (1, 2, 0))
+        elif repaired.shape[-1] != 3:
+            raise RuntimeError(f"Unexpected LaMa output shape: {repaired.shape}")
+
+        repaired = repaired.astype(np.float32)
+        # The published model returns [0,255]. Keep that path exact, but also
+        # tolerate [0,1] outputs so a model replacement cannot silently produce
+        # an almost-black repaired region.
+        if float(np.nanmax(repaired)) <= 1.5:
+            repaired *= 255.0
+        repaired = np.nan_to_num(repaired, nan=0.0, posinf=255.0, neginf=0.0)
+        return np.clip(repaired, 0.0, 255.0).astype(np.uint8)
+
+    @staticmethod
+    def _expand_mask(mask: np.ndarray) -> np.ndarray:
+        h, w = mask.shape
+        # Enough expansion to remove anti-aliased/translucent watermark edges,
+        # without creating a visibly larger edited area on small images.
+        radius = max(2, int(round(min(h, w) / 500.0)))
+        radius = min(radius, 12)
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1)
+        )
+        return cv2.dilate(mask, kernel, iterations=1)
+
     def run(self, image: Image.Image, mask: Image.Image) -> Image.Image:
-        session = self._get_session()
         source = np.asarray(image.convert("RGB"), dtype=np.uint8)
-        tight_mask = np.asarray(mask.convert("L"), dtype=np.uint8)
-        tight_mask = np.where(tight_mask > 30, 255, 0).astype(np.uint8)
-        if not np.any(tight_mask):
+        user_mask = np.asarray(mask.convert("L"), dtype=np.uint8)
+        user_mask = np.where(user_mask > 30, 255, 0).astype(np.uint8)
+
+        if not np.any(user_mask):
             return image.convert("RGB")
 
-        # Give LaMa a modestly expanded mask so it can remove edge remnants,
-        # but NEVER use that expanded mask for final compositing.
-        h, w = tight_mask.shape
-        expansion = max(2, int(round(min(h, w) / 900)))
-        model_mask_full = cv2.dilate(tight_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (expansion * 2 + 1, expansion * 2 + 1)))
+        session = self._get_session()
 
+        # LaMa needs a little extra room around the painted area to reconstruct
+        # edges. The final composite also uses this expanded mask to ensure that
+        # the original watermark is not reintroduced by a too-small feather.
+        model_mask_full = self._expand_mask(user_mask)
         crop, _, box = self._prepare_crop(source, model_mask_full)
         left, top, right, bottom = box
         crop_model_mask = model_mask_full[top:bottom, left:right]
         model_image, model_mask = self._resize_to_512(crop, crop_model_mask)
 
-        image_input = np.transpose((model_image.astype(np.float32) / 255.0)[None, ...], (0, 3, 1, 2))
+        image_input = np.transpose(
+            (model_image.astype(np.float32) / 255.0)[None, ...],
+            (0, 3, 1, 2),
+        )
         mask_input = (model_mask.astype(np.float32) / 255.0)[None, None, ...]
-        input_names = [x.name for x in session.get_inputs()]
-        output_name = session.get_outputs()[0].name
-        output = session.run([output_name], {input_names[0]: image_input, input_names[1]: mask_input})[0]
-        repaired = np.asarray(output[0])
-        if repaired.ndim == 3 and repaired.shape[0] == 3:
-            repaired = np.transpose(repaired, (1, 2, 0))
-        repaired = np.clip(repaired, 0, 255).astype(np.uint8)
-        repaired = cv2.resize(repaired, (crop.shape[1], crop.shape[0]), interpolation=cv2.INTER_CUBIC)
 
-        # Crucial: composite only where the ORIGINAL mask says the watermark is.
-        # A 1px-ish feather prevents a hard edge without modifying surrounding pixels.
-        tight_crop = tight_mask[top:bottom, left:right]
-        feather_px = max(0.7, min(2.2, min(crop.shape[:2]) / 900.0))
-        alpha = cv2.GaussianBlur(tight_crop.astype(np.float32) / 255.0, (0, 0), feather_px)
+        # Match inputs by tensor shape instead of relying on input ordering.
+        inputs = session.get_inputs()
+        image_name = None
+        mask_name = None
+        for item in inputs:
+            shape = item.shape
+            if len(shape) == 4 and shape[1] == 3:
+                image_name = item.name
+            elif len(shape) == 4 and shape[1] == 1:
+                mask_name = item.name
+        if not image_name or not mask_name:
+            raise RuntimeError(
+                "LaMa ONNX inputs were not recognised; expected RGB and mask tensors."
+            )
+
+        output = session.run(
+            [session.get_outputs()[0].name],
+            {image_name: image_input, mask_name: mask_input},
+        )[0]
+        repaired = self._normalise_output(output)
+        repaired = cv2.resize(
+            repaired,
+            (crop.shape[1], crop.shape[0]),
+            interpolation=cv2.INTER_CUBIC,
+        )
+
+        # Composite over the expanded mask, but feather only the outer boundary.
+        # The old implementation feathered the *original* mask, which could
+        # leave semi-transparent watermark pixels untouched around its edge.
+        composite_mask = model_mask_full[top:bottom, left:right]
+        alpha = composite_mask.astype(np.float32) / 255.0
+
+        feather = max(1.0, min(3.0, min(crop.shape[:2]) / 700.0))
+        alpha = cv2.GaussianBlur(alpha, (0, 0), feather)
         alpha = np.clip(alpha, 0.0, 1.0)[..., None]
 
-        result = source.copy().astype(np.float32)
+        result = source.astype(np.float32)
         original_crop = source[top:bottom, left:right].astype(np.float32)
-        result[top:bottom, left:right] = original_crop * (1.0 - alpha) + repaired.astype(np.float32) * alpha
-        return Image.fromarray(np.clip(result, 0, 255).astype(np.uint8), mode="RGB")
+        result[top:bottom, left:right] = (
+            original_crop * (1.0 - alpha) + repaired.astype(np.float32) * alpha
+        )
+
+        final = Image.fromarray(
+            np.clip(result, 0, 255).astype(np.uint8),
+            mode="RGB",
+        )
+
+        # A final sanity check catches accidental no-op behaviour caused by an
+        # invalid/empty model response. If LaMa actually changed pixels, return
+        # the repaired result normally; otherwise keep the original unchanged
+        # rather than pretending that a repair happened.
+        final_arr = np.asarray(final)
+        changed = np.mean(np.abs(final_arr.astype(np.int16) - source.astype(np.int16)))
+        if changed < 0.01:
+            raise RuntimeError(
+                "LaMa returned no visible change for the supplied Mask. "
+                "Please enlarge the Mask so it fully covers the watermark."
+            )
+
+        return final
