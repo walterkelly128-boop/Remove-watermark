@@ -104,11 +104,7 @@ def _editor_value(mask: Image.Image, background: Image.Image | None = None):
     layer = Image.new("RGBA", mask.size, (255, 255, 255, 0))
     layer.putalpha(Image.fromarray(alpha, mode="L"))
     background = (background.convert("RGB") if background is not None else Image.new("RGB", mask.size, (0, 0, 0)))
-    return {
-        "background": background,
-        "layers": [layer],
-        "composite": layer,
-    }
+    # Composite must include the background. Some Gradio ImageEditor versions\n    # render the editor from composite rather than background + layers.\n    composite = Image.alpha_composite(background.convert("RGBA"), layer)\n    return {\n        "background": background,\n        "layers": [layer],\n        "composite": composite,\n    }
 
 
 def auto_detect(image):
@@ -161,10 +157,10 @@ with gr.Blocks(title="AI 图片智能修复", theme=gr.themes.Soft()) as demo:
 
     gr.Markdown("## Mask 编辑\n白色区域 = AI 要重建；擦除后区域会立即恢复为保留状态。编辑器的撤销按钮也可以撤销上一步。")
     mask_editor = gr.ImageEditor(
-        label="Mask 编辑器",
+        label="Mask 编辑器（原图底图 + 白色修复区域）",
         type="pil",
         image_mode="RGBA",
-        sources=[],
+        sources=["upload"],
         brush=gr.Brush(colors=["#ffffff"], default_size=24, color_mode="fixed"),
         eraser=gr.Eraser(default_size=24),
         height=520,
