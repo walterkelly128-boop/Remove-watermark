@@ -29,10 +29,10 @@ CHUNK_SIZE = 1024 * 1024
 class InpaintEngine:
     """CPU-only watermark removal engine.
 
-    The important rule is that the user mask is the authoritative repair area.
-    The engine first creates an original-resolution OpenCV reconstruction, then
-    uses LaMa on a context-rich local crop. Several passes are used so that
-    high-contrast text/logo edges are not left behind.
+    Disconnected watermark regions are repaired independently. This is important
+    for images containing several text/logo watermarks: feeding one giant crop
+    containing all regions to LaMa wastes its 512x512 context and often leaves
+    one or more watermarks behind.
     """
 
     def __init__(self, model_path: Optional[Path] = None):
@@ -118,8 +118,6 @@ class InpaintEngine:
     @staticmethod
     def _expand_mask(mask: np.ndarray, strength: int = 1) -> np.ndarray:
         h, w = mask.shape
-        # Scale the expansion to the actual image rather than using a tiny fixed
-        # radius. Large text/logo masks need several pixels of safety margin.
         base = max(2, int(round(min(h, w) / 420.0)))
         radius = min(24, base * max(1, strength))
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
@@ -134,8 +132,6 @@ class InpaintEngine:
         x1, x2 = int(xs.min()), int(xs.max()) + 1
         y1, y2 = int(ys.min()), int(ys.max()) + 1
         mw, mh = x2 - x1, y2 - y1
-        # More context than the previous implementation. This is especially
-        # important for large center watermarks and logos over photographs.
         crop_w = min(w, max(256, int(mw * 3.2) + 160))
         crop_h = min(h, max(256, int(mh * 3.2) + 160))
         cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
@@ -178,12 +174,11 @@ class InpaintEngine:
     def _opencv_pass(source: np.ndarray, mask: np.ndarray, radius: float) -> np.ndarray:
         telea = cv2.inpaint(source, mask, radius, cv2.INPAINT_TELEA)
         ns = cv2.inpaint(source, mask, radius, cv2.INPAINT_NS)
-        # Telea is usually better on text/lines; NS helps broad flat regions.
         return cv2.addWeighted(telea, 0.65, ns, 0.35, 0.0)
 
     @staticmethod
     def _blend(original: np.ndarray, repaired: np.ndarray, mask: np.ndarray, sigma: float = 0.0) -> np.ndarray:
-        alpha = (mask.astype(np.float32) / 255.0)
+        alpha = mask.astype(np.float32) / 255.0
         if sigma > 0:
             alpha = cv2.GaussianBlur(alpha, (0, 0), sigma)
         alpha = np.clip(alpha, 0.0, 1.0)[..., None]
@@ -200,6 +195,123 @@ class InpaintEngine:
             return 0.0
         return float(np.mean(np.abs(a[m].astype(np.int16) - b[m].astype(np.int16))))
 
+    @staticmethod
+    def _component_masks(mask: np.ndarray) -> list[np.ndarray]:
+        """Split a mask into useful watermark regions.
+
+        Tiny glyph fragments are kept. Nearby fragments are grouped first so a
+        multi-character text watermark is repaired as one region, while distant
+        logos/text watermarks are sent to LaMa separately.
+        """
+        binary = np.where(mask > 0, 255, 0).astype(np.uint8)
+        h, w = binary.shape
+        # Connect characters that belong to the same text line, but don't bridge
+        # distant watermarks across the image.
+        join_x = max(5, min(31, int(round(w / 180))))
+        join_y = max(3, min(17, int(round(h / 420))))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (join_x | 1, join_y | 1))
+        grouped = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(grouped, 8)
+        components: list[np.ndarray] = []
+        min_area = max(12, int(h * w * 0.000001))
+        for i in range(1, n):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < min_area:
+                continue
+            comp = np.where(labels == i, 255, 0).astype(np.uint8)
+            # Recover the original mask inside the grouped component instead of
+            # repairing the artificial closing pixels themselves.
+            comp = cv2.bitwise_and(binary, comp)
+            if np.count_nonzero(comp) >= min_area:
+                components.append(comp)
+
+        if not components and np.count_nonzero(binary):
+            components = [binary]
+
+        # Very close components can still be joined by bounding-box proximity.
+        # This helps text with unusually large gaps between words.
+        merged = True
+        while merged and len(components) > 1:
+            merged = False
+            boxes = []
+            for comp in components:
+                ys, xs = np.where(comp > 0)
+                boxes.append((xs.min(), ys.min(), xs.max(), ys.max()))
+            for i in range(len(components)):
+                if merged:
+                    break
+                for j in range(i + 1, len(components)):
+                    ax1, ay1, ax2, ay2 = boxes[i]
+                    bx1, by1, bx2, by2 = boxes[j]
+                    gap_x = max(0, max(ax1, bx1) - min(ax2, bx2) - 1)
+                    gap_y = max(0, max(ay1, by1) - min(ay2, by2) - 1)
+                    near = gap_x <= max(12, w // 80) and gap_y <= max(12, h // 80)
+                    if near:
+                        components[i] = cv2.bitwise_or(components[i], components[j])
+                        components.pop(j)
+                        merged = True
+                        break
+        return components
+
+    def _repair_region(self, source: np.ndarray, user_mask: np.ndarray, session) -> np.ndarray:
+        """Repair one disconnected watermark region at a useful local scale."""
+        repair_mask = self._expand_mask(user_mask, 2)
+        edge_mask = self._expand_mask(user_mask, 3)
+
+        cv_a = self._opencv_pass(source, repair_mask, 5.0)
+        cv_b = self._opencv_pass(source, edge_mask, 7.0)
+        opencv_final = self._blend(cv_a, cv_b, repair_mask, sigma=0.5)
+        final = opencv_final
+
+        try:
+            crop, crop_mask, (left, top, right, bottom) = self._prepare_crop(source, edge_mask)
+            ch, cw = crop.shape[:2]
+            model_image = cv2.resize(crop, (512, 512), interpolation=cv2.INTER_AREA)
+            model_mask = cv2.resize(crop_mask, (512, 512), interpolation=cv2.INTER_NEAREST)
+
+            lama_1 = self._run_lama(session, model_image, model_mask)
+            lama_1 = cv2.resize(lama_1, (cw, ch), interpolation=cv2.INTER_CUBIC)
+
+            lama_2 = self._run_lama(
+                session,
+                cv2.resize(lama_1, (512, 512), interpolation=cv2.INTER_AREA),
+                model_mask,
+            )
+            lama_2 = cv2.resize(lama_2, (cw, ch), interpolation=cv2.INTER_CUBIC)
+
+            lama_full = source.copy()
+            lama_full[top:bottom, left:right] = lama_2
+            lama_final = self._blend(source, lama_full, edge_mask, sigma=0.4)
+
+            interior = cv2.erode(
+                repair_mask,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+                1,
+            )
+            interior = cv2.bitwise_and(interior, user_mask)
+            alpha = (interior.astype(np.float32) / 255.0)[..., None]
+            final = np.clip(
+                opencv_final.astype(np.float32) * (1.0 - alpha)
+                + lama_final.astype(np.float32) * alpha,
+                0,
+                255,
+            ).astype(np.uint8)
+
+            cv_delta = self._masked_delta(opencv_final, source, user_mask)
+            lama_delta = self._masked_delta(lama_final, source, user_mask)
+            print(f"[inpaint] region delta: opencv={cv_delta:.2f}, lama={lama_delta:.2f}", flush=True)
+            if lama_delta < max(2.0, cv_delta * 0.20):
+                final = opencv_final
+        except Exception as exc:
+            print(f"[inpaint] region LaMa failed; OpenCV fallback: {exc}", flush=True)
+
+        boundary = cv2.subtract(
+            edge_mask,
+            cv2.erode(edge_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)), 1),
+        )
+        boundary_repair = self._opencv_pass(final, boundary, 4.0)
+        return self._blend(final, boundary_repair, boundary, sigma=0.7)
+
     def run(self, image: Image.Image, mask: Image.Image) -> Image.Image:
         source = np.asarray(image.convert("RGB"), dtype=np.uint8)
         user_mask = np.asarray(mask.convert("L"), dtype=np.uint8)
@@ -210,76 +322,40 @@ class InpaintEngine:
 
         print(f"[inpaint] USER MASK = {pixels:,} px / {user_mask.size:,} ({pixels / user_mask.size:.2%})", flush=True)
 
-        # Two expansion levels. The larger one is used only for reconstruction;
-        # the user's original mask remains the authoritative final replacement area.
-        repair_mask = self._expand_mask(user_mask, 2)
-        edge_mask = self._expand_mask(user_mask, 3)
+        components = self._component_masks(user_mask)
+        print(f"[inpaint] detected repair regions = {len(components)}", flush=True)
 
-        # Pass A: two original-resolution OpenCV reconstructions. Running them
-        # at native resolution makes a visible difference even when LaMa is slow
-        # or unavailable.
-        cv_a = self._opencv_pass(source, repair_mask, 5.0)
-        cv_b = self._opencv_pass(source, edge_mask, 7.0)
-        opencv_final = self._blend(cv_a, cv_b, repair_mask, sigma=0.5)
-
-        final = opencv_final
-        lama_ok = False
+        final = source.copy()
+        session = None
         try:
             session = self._get_session()
-            crop, crop_mask, (left, top, right, bottom) = self._prepare_crop(source, edge_mask)
-            ch, cw = crop.shape[:2]
-            model_image = cv2.resize(crop, (512, 512), interpolation=cv2.INTER_AREA)
-            model_mask = cv2.resize(crop_mask, (512, 512), interpolation=cv2.INTER_NEAREST)
-
-            # First LaMa pass.
-            lama_1 = self._run_lama(session, model_image, model_mask)
-            lama_1 = cv2.resize(lama_1, (cw, ch), interpolation=cv2.INTER_CUBIC)
-
-            # Second pass: feed the first reconstruction back to LaMa with a
-            # slightly larger mask. This targets ghosted text and logo edges.
-            second_mask = cv2.resize(crop_mask, (512, 512), interpolation=cv2.INTER_NEAREST)
-            lama_2 = self._run_lama(session, cv2.resize(lama_1, (512, 512), interpolation=cv2.INTER_AREA), second_mask)
-            lama_2 = cv2.resize(lama_2, (cw, ch), interpolation=cv2.INTER_CUBIC)
-
-            lama_full = source.copy()
-            lama_full[top:bottom, left:right] = lama_2
-            lama_final = self._blend(source, lama_full, edge_mask, sigma=0.4)
-
-            # LaMa should be used for the broad interior; native OpenCV is kept
-            # for the immediate boundary where it tends to produce cleaner seams.
-            interior = cv2.erode(repair_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)), 1)
-            interior = cv2.bitwise_and(interior, user_mask)
-            alpha = (interior.astype(np.float32) / 255.0)[..., None]
-            final = np.clip(
-                opencv_final.astype(np.float32) * (1.0 - alpha)
-                + lama_final.astype(np.float32) * alpha,
-                0,
-                255,
-            ).astype(np.uint8)
-            lama_ok = True
-
-            cv_delta = self._masked_delta(opencv_final, source, user_mask)
-            lama_delta = self._masked_delta(lama_final, source, user_mask)
-            print(f"[inpaint] masked delta: opencv={cv_delta:.2f}, lama={lama_delta:.2f}", flush=True)
-
-            # If LaMa essentially returned the input, do not let it weaken the
-            # native-resolution result.
-            if lama_delta < max(2.0, cv_delta * 0.20):
-                final = opencv_final
         except Exception as exc:
-            print(f"[inpaint] LaMa failed; native OpenCV fallback: {exc}", flush=True)
+            print(f"[inpaint] LaMa unavailable; using native OpenCV: {exc}", flush=True)
 
-        # Mandatory final edge cleanup. This pass is deliberately small and is
-        # restricted to the outer band of the user's mask, preventing the old
-        # watermark contour from surviving around the repaired area.
-        boundary = cv2.subtract(edge_mask, cv2.erode(edge_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)), 1))
-        boundary = cv2.bitwise_and(boundary, edge_mask)
-        boundary_repair = self._opencv_pass(final, boundary, 4.0)
-        final = self._blend(final, boundary_repair, boundary, sigma=0.7)
+        total_changed = 0.0
+        for index, component in enumerate(components, 1):
+            region_pixels = int(np.count_nonzero(component))
+            print(f"[inpaint] repairing region {index}/{len(components)}: {region_pixels:,} px", flush=True)
+            try:
+                if session is not None:
+                    repaired = self._repair_region(source, component, session)
+                else:
+                    repair_mask = self._expand_mask(component, 2)
+                    repaired = self._opencv_pass(source, repair_mask, 5.0)
+                # Apply only this component's expanded reconstruction. Keeping
+                # separate regions prevents one watermark from contaminating the
+                # context used to reconstruct another.
+                apply_mask = self._expand_mask(component, 3)
+                final = self._blend(final, repaired, apply_mask, sigma=0.35)
+                delta = self._masked_delta(repaired, source, component)
+                total_changed += delta
+                print(f"[inpaint] region {index} masked delta={delta:.2f}", flush=True)
+            except Exception as exc:
+                print(f"[inpaint] region {index} failed: {exc}", flush=True)
 
-        changed = float(np.mean(np.abs(final.astype(np.int16) - source.astype(np.int16))))
         masked_changed = self._masked_delta(final, source, user_mask)
-        print(f"[inpaint] final delta={changed:.3f}, masked delta={masked_changed:.3f}, lama={lama_ok}", flush=True)
+        changed = float(np.mean(np.abs(final.astype(np.int16) - source.astype(np.int16))))
+        print(f"[inpaint] final delta={changed:.3f}, masked delta={masked_changed:.3f}, regions={len(components)}", flush=True)
         if masked_changed < 0.5:
             raise RuntimeError("修复区域几乎没有发生变化，请确认 Mask 覆盖了完整水印区域。")
 
