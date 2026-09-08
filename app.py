@@ -16,7 +16,7 @@ engine = InpaintEngine()
 
 
 def _as_mask_array(value, size):
-    """Convert PIL/NumPy/Gradio ImageEditor values to a binary grayscale mask."""
+    """Extract a binary mask from PIL/NumPy editor layers."""
     if value is None:
         return np.zeros((size[1], size[0]), dtype=np.uint8)
 
@@ -28,16 +28,11 @@ def _as_mask_array(value, size):
         return np.zeros((size[1], size[0]), dtype=np.uint8)
 
     if arr.ndim == 3:
-        # For an RGBA drawing layer, alpha is the safest representation of
-        # the painted area. For RGB/RGBA composites, use brightness when alpha
-        # is fully opaque; this prevents a black background from becoming a mask.
         if arr.shape[2] >= 4:
             alpha = arr[:, :, 3].astype(np.uint8)
             rgb = arr[:, :, :3].astype(np.uint8)
-            if np.any(rgb > 10):
-                arr = np.max(rgb, axis=2)
-            else:
-                arr = alpha
+            # A transparent brush layer should be interpreted from alpha.
+            arr = alpha if np.any(alpha < 250) or not np.any(rgb > 10) else np.max(rgb, axis=2)
         else:
             arr = np.max(arr[:, :, :3], axis=2)
     elif arr.ndim != 2:
@@ -45,54 +40,74 @@ def _as_mask_array(value, size):
 
     arr = np.asarray(arr, dtype=np.uint8)
     if arr.shape != (size[1], size[0]):
-        arr = np.asarray(
-            Image.fromarray(arr, mode="L").resize(size, Image.Resampling.NEAREST)
-        )
+        arr = np.asarray(Image.fromarray(arr, mode="L").resize(size, Image.Resampling.NEAREST))
     return arr
 
 
+def _layer_mask(layer, size):
+    """Return only painted pixels from one ImageEditor layer."""
+    if layer is None:
+        return np.zeros((size[1], size[0]), dtype=np.uint8)
+
+    if isinstance(layer, Image.Image):
+        arr = np.asarray(layer)
+    elif isinstance(layer, np.ndarray):
+        arr = layer
+    else:
+        return _as_mask_array(layer, size)
+
+    if arr.ndim == 3 and arr.shape[2] >= 4:
+        # Gradio's layer alpha is authoritative: erased pixels become transparent.
+        alpha = arr[:, :, 3].astype(np.uint8)
+        mask = alpha
+    else:
+        mask = _as_mask_array(arr, size)
+
+    if mask.shape != (size[1], size[0]):
+        mask = np.asarray(Image.fromarray(mask, mode="L").resize(size, Image.Resampling.NEAREST))
+    return (mask > 30).astype(np.uint8) * 255
+
+
 def to_mask_array(value, size):
-    """Robustly extract painted pixels from all common Gradio ImageEditor formats."""
+    """Extract the current visible mask without resurrecting erased pixels."""
     if value is None:
         return np.zeros((size[1], size[0]), dtype=np.uint8)
 
     if isinstance(value, (Image.Image, np.ndarray)):
-        return _as_mask_array(value, size)
+        return (_as_mask_array(value, size) > 30).astype(np.uint8) * 255
 
     if not isinstance(value, dict):
         return np.zeros((size[1], size[0]), dtype=np.uint8)
 
-    # IMPORTANT: ImageEditor stores manual strokes in `layers`. Prefer those
-    # over `composite`, because composite can contain the black background.
     layers = value.get("layers") or []
     acc = np.zeros((size[1], size[0]), dtype=np.uint8)
     for layer in layers:
-        layer_mask = _as_mask_array(layer, size)
-        acc = np.maximum(acc, layer_mask)
+        # Eraser edits the layer transparency. Rebuild from the current layer,
+        # not by preserving pixels from an earlier composite.
+        acc = np.maximum(acc, _layer_mask(layer, size))
 
-    if np.any(acc > 30):
+    if np.any(acc):
         return acc
 
-    # Fallback for versions that flatten the editor into composite/background.
-    for key in ("composite", "background"):
-        candidate = value.get(key)
-        if candidate is None:
-            continue
-        candidate_mask = _as_mask_array(candidate, size)
-        if np.any(candidate_mask > 30):
-            return candidate_mask
-
+    # Only use composite as a last fallback. Never use background because the
+    # original image must not become a repair mask.
+    composite = value.get("composite")
+    if composite is not None:
+        return (_as_mask_array(composite, size) > 30).astype(np.uint8) * 255
     return acc
 
 
 def _editor_value(mask: Image.Image):
-    """Create an ImageEditor value with an explicit black background and white mask layer."""
-    black = Image.new("L", mask.size, 0)
-    white_mask = mask.convert("L")
+    """Provide a single editable white-on-transparent mask layer."""
+    mask = mask.convert("L")
+    alpha = np.asarray(mask, dtype=np.uint8)
+    layer = Image.new("RGBA", mask.size, (255, 255, 255, 0))
+    layer.putalpha(Image.fromarray(alpha, mode="L"))
+    black = Image.new("RGB", mask.size, (0, 0, 0))
     return {
         "background": black,
-        "layers": [white_mask],
-        "composite": white_mask,
+        "layers": [layer],
+        "composite": layer,
     }
 
 
@@ -105,9 +120,9 @@ def auto_detect(image):
     mask_img = Image.fromarray(mask, mode="L")
     count = int(np.count_nonzero(mask))
     if count == 0:
-        msg = "未找到高置信度候选区域。请直接在 Mask 编辑器中用画笔涂白需要去除的水印。"
+        msg = "未找到高置信度候选区域。请直接在 Mask 编辑器中用画笔涂白需要去除的区域。"
     else:
-        msg = f"已生成候选 Mask：{count:,} 个像素。请检查红色区域，可用画笔增加、橡皮擦删除。"
+        msg = f"已生成候选 Mask：{count:,} 个像素。白色区域可继续增加，橡皮擦可以直接取消误选。"
     return preview, _editor_value(mask_img), msg
 
 
@@ -117,10 +132,9 @@ def restore(image, mask_value):
 
     pil = image if isinstance(image, Image.Image) else Image.fromarray(image)
     mask = to_mask_array(mask_value, pil.size)
-    mask = (mask > 30).astype(np.uint8) * 255
 
     if not np.any(mask):
-        raise gr.Error("没有检测到修复区域，请先点击「自动识别候选区域」，或在 Mask 编辑器中用白色画笔涂抹水印。")
+        raise gr.Error("没有检测到修复区域，请先自动识别或在 Mask 编辑器中用画笔涂抹。")
 
     result = engine.run(pil, Image.fromarray(mask, mode="L"))
     return result
@@ -134,8 +148,8 @@ def clear_mask(image):
 
 
 with gr.Blocks(title="AI 图片智能修复", theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# AI 图片智能修复\n自动识别候选区域 + 手动画笔/橡皮擦 Mask + CPU AI Inpainting")
-    gr.Markdown("仅处理你拥有或获授权修改的图片。自动识别只是候选检测，请在修复前检查 Mask。")
+    gr.Markdown("# AI 图片智能修复\n自动识别候选区域 + 可撤销 Mask 编辑 + CPU AI Inpainting")
+    gr.Markdown("仅处理你拥有或获授权修改的图片。白色 = 修复，透明/黑色 = 保留。")
 
     with gr.Row():
         with gr.Column():
@@ -145,11 +159,11 @@ with gr.Blocks(title="AI 图片智能修复", theme=gr.themes.Soft()) as demo:
         with gr.Column():
             preview = gr.Image(label="自动识别预览（红色=待修复）", type="pil")
 
-    gr.Markdown("## Mask 编辑\n白色区域 = AI 要重建；黑色区域 = 保留。用画笔增加区域，用橡皮擦删除误识别区域。")
+    gr.Markdown("## Mask 编辑\n白色区域 = AI 要重建；擦除后区域会立即恢复为保留状态。编辑器的撤销按钮也可以撤销上一步。")
     mask_editor = gr.ImageEditor(
         label="Mask 编辑器",
         type="pil",
-        image_mode="L",
+        image_mode="RGBA",
         sources=[],
         brush=gr.Brush(colors=["#ffffff"], default_size=24, color_mode="fixed"),
         eraser=gr.Eraser(default_size=24),
@@ -157,7 +171,7 @@ with gr.Blocks(title="AI 图片智能修复", theme=gr.themes.Soft()) as demo:
     )
 
     with gr.Row():
-        clear_btn = gr.Button("清除 Mask")
+        clear_btn = gr.Button("清除全部 Mask")
         restore_btn = gr.Button("🚀 AI 智能修复", variant="primary")
 
     result = gr.Image(label="修复结果", type="pil", format="png")
