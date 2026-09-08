@@ -172,6 +172,7 @@ with gr.Blocks(title="AI 图片智能修复", theme=gr.themes.Soft()) as demo:
 
     result = gr.Image(label="修复结果", type="pil", format="png")
 
+    source.change(clear_mask, inputs=source, outputs=mask_editor)
     auto_btn.click(auto_detect, inputs=source, outputs=[preview, mask_editor, status])
     clear_btn.click(clear_mask, inputs=source, outputs=mask_editor)
     restore_btn.click(restore, inputs=[source, mask_editor], outputs=result)
