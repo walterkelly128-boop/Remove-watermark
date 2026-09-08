@@ -5,7 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     CUDA_VISIBLE_DEVICES="" \
     OMP_NUM_THREADS=4 \
-    MKL_NUM_THREADS=4
+    MKL_NUM_THREADS=4 \
+    GEMINI_IMAGE_MODEL="gemini-3.1-flash-image"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libgl1 libgomp1 libsm6 libxext6 libxrender1 \
@@ -17,8 +18,10 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     && python -m pip install --only-binary=:all: -r requirements.txt
 
 COPY app.py .
+COPY gemini_app.py .
+COPY gemini_engine.py .
 COPY core ./core
 RUN mkdir -p /app/models /app/data/output
 
 EXPOSE 7860
-CMD ["python", "app.py"]
+CMD ["python", "gemini_app.py"]
