@@ -3,7 +3,7 @@ services:
     build: .
     container_name: zolfox-tools
     ports:
-      - "7860:7860"
+      - "127.0.0.1:7860:7860"
     environment:
       CUDA_VISIBLE_DEVICES: ""
       OMP_NUM_THREADS: "4"
@@ -25,7 +25,7 @@ services:
       ADMIN_TOTP_SECRET: ${ADMIN_TOTP_SECRET:-}
       ADMIN_TOTP_REQUIRED: ${ADMIN_TOTP_REQUIRED:-0}
       RECHARGE_PACKAGES: ${RECHARGE_PACKAGES:-10:5,50:20,100:35}
-      RECHARGE_PAYMENT_INSTRUCTIONS: ${RECHARGE_PAYMENT_INSTRUCTIONS:-请先提交充值申请，管理员确认收款后会手动审核并增加额度。}
+      RECHARGE_PAYMENT_INSTRUCTIONS: ${RECHARGE_PAYMENT_INSTRUCTIONS:-提交申请后按管理员提供的付款方式完成付款，管理员确认收款后手动审核。}
     volumes:
       - ./models:/app/models
       - ./data:/app/data
