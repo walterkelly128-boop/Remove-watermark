@@ -18,12 +18,7 @@ DEFAULT_OPENAI_MODEL = os.environ.get("RC_OPENAI_MODEL", "gpt-image-1")
 
 
 class RCImageEngine:
-    """Image editing through an OpenAI-compatible third-party API endpoint.
-
-    The provider is configurable so the real API key never reaches the browser.
-    Gemini-style image models use /chat/completions; OpenAI image models use
-    /images/edits when the model name starts with gpt-image.
-    """
+    """Image editing through an OpenAI-compatible third-party API endpoint."""
 
     def __init__(self, provider: str, api_key: Optional[str] = None, model: Optional[str] = None):
         self.provider = provider.lower().strip()
@@ -31,8 +26,7 @@ class RCImageEngine:
         self.base_url = os.environ.get("RC_API_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
         default = DEFAULT_GEMINI_MODEL if self.provider == "gemini" else DEFAULT_OPENAI_MODEL
         self.model = model or os.environ.get(
-            "RC_GEMINI_MODEL" if self.provider == "gemini" else "RC_OPENAI_MODEL",
-            default,
+            "RC_GEMINI_MODEL" if self.provider == "gemini" else "RC_OPENAI_MODEL", default
         )
         self.timeout = int(os.environ.get("RC_API_TIMEOUT", "180"))
 
@@ -43,18 +37,17 @@ class RCImageEngine:
     @staticmethod
     def _png_bytes(image: Image.Image) -> bytes:
         buf = io.BytesIO()
-        image.convert("RGB").save(buf, format="PNG", optimize=True)
+        image.save(buf, format="PNG", optimize=True)
         return buf.getvalue()
 
-    @staticmethod
-    def _data_url(image: Image.Image) -> str:
-        return "data:image/png;base64," + base64.b64encode(RCImageEngine._png_bytes(image)).decode("ascii")
+    @classmethod
+    def _data_url(cls, image: Image.Image) -> str:
+        return "data:image/png;base64," + base64.b64encode(cls._png_bytes(image)).decode("ascii")
 
     @staticmethod
     def _mask_reference(image: Image.Image, mask: np.ndarray) -> Image.Image:
         rgb = np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
-        m = np.asarray(mask) > 30
-        rgb[m] = (255, 40, 40)
+        rgb[np.asarray(mask) > 30] = (255, 40, 40)
         return Image.fromarray(rgb, "RGB")
 
     @staticmethod
@@ -78,21 +71,21 @@ class RCImageEngine:
     def _headers(self):
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
 
-    def _prompt(self) -> str:
+    @staticmethod
+    def _prompt() -> str:
         return (
             "Perform precise image restoration on an image the user is authorized to edit. "
-            "The first image is the source. The second image is a red mask reference; "
-            "red pixels identify the ONLY area that must be reconstructed. Remove the watermark, "
-            "text, logo or overlay inside that region by naturally reconstructing the content "
-            "that should be behind it. Change only the masked area. Preserve identity, faces, "
-            "hair, objects, geometry, perspective, lighting, shadows, colors, texture, sharpness "
-            "and composition outside the mask. Do not blur the repaired area. Do not add objects, "
-            "text or logos. Return the restored image only."
+            "The first image is the source. The second image is a red mask reference; red pixels "
+            "identify the ONLY area that must be reconstructed. Remove the watermark, text, logo "
+            "or overlay inside that region by naturally reconstructing the content behind it. "
+            "Change only the masked area. Preserve identity, faces, hair, objects, geometry, "
+            "perspective, lighting, shadows, colors, texture, sharpness and composition outside "
+            "the mask. Do not blur the repaired area. Do not add objects, text or logos. Return "
+            "the restored image only."
         )
 
     @staticmethod
     def _extract_image_from_response(data: dict) -> Optional[Image.Image]:
-        # OpenAI-compatible image response: data[].b64_json or data[].url
         for item in data.get("data", []) or []:
             b64 = item.get("b64_json") or item.get("base64")
             if b64:
@@ -103,88 +96,72 @@ class RCImageEngine:
                 r.raise_for_status()
                 return Image.open(io.BytesIO(r.content)).convert("RGB")
 
-        # Some OpenAI-compatible multimodal providers return images in message.images.
         for choice in data.get("choices", []) or []:
             msg = choice.get("message", {}) or {}
             for item in msg.get("images", []) or []:
-                if isinstance(item, str):
-                    value = item
-                else:
-                    value = item.get("image_url", item.get("data", ""))
-                    if isinstance(value, dict):
-                        value = value.get("url", value.get("data", ""))
+                value = item if isinstance(item, str) else item.get("image_url", item.get("data", ""))
+                if isinstance(value, dict):
+                    value = value.get("url", value.get("data", ""))
                 if isinstance(value, str) and value.startswith("data:image"):
                     return Image.open(io.BytesIO(base64.b64decode(value.split(",", 1)[1]))).convert("RGB")
 
             content = msg.get("content", "")
-            if isinstance(content, list):
-                for part in content:
-                    if not isinstance(part, dict):
-                        continue
+            parts = content if isinstance(content, list) else [content]
+            for part in parts:
+                if isinstance(part, dict):
                     value = part.get("image_url") or part.get("data")
                     if isinstance(value, dict):
                         value = value.get("url", value.get("data", ""))
-                    if isinstance(value, str) and value.startswith("data:image"):
-                        return Image.open(io.BytesIO(base64.b64decode(value.split(",", 1)[1]))).convert("RGB")
-            elif isinstance(content, str) and "data:image" in content:
-                value = content[content.find("data:image"):]
-                value = value.split()[0]
-                return Image.open(io.BytesIO(base64.b64decode(value.split(",", 1)[1]))).convert("RGB")
+                else:
+                    value = part
+                if isinstance(value, str) and "data:image" in value:
+                    value = value[value.find("data:image"):].split()[0]
+                    return Image.open(io.BytesIO(base64.b64decode(value.split(",", 1)[1]))).convert("RGB")
         return None
 
     def _openai_image_edit(self, image: Image.Image, mask: np.ndarray) -> Image.Image:
-        endpoint = f"{self.base_url}/images/edits"
-        rgba = Image.new("RGBA", image.size, (255, 255, 255, 255))
         alpha = np.full(mask.shape, 255, dtype=np.uint8)
         alpha[np.asarray(mask) > 30] = 0
-        rgba.putalpha(Image.fromarray(alpha, "L"))
+        rgba_mask = Image.new("RGBA", image.size, (255, 255, 255, 255))
+        rgba_mask.putalpha(Image.fromarray(alpha, "L"))
 
         files = {
-            "image": ("image.png", self._png_bytes(image), "image/png"),
-            "mask": ("mask.png", self._png_bytes(rgba.convert("RGB")), "image/png"),
+            "image": ("image.png", self._png_bytes(image.convert("RGBA")), "image/png"),
+            "mask": ("mask.png", self._png_bytes(rgba_mask), "image/png"),
         }
-        data = {"model": self.model, "prompt": self._prompt(), "size": "auto"}
         response = requests.post(
-            endpoint,
+            f"{self.base_url}/images/edits",
             headers={"Authorization": f"Bearer {self.api_key}"},
             files=files,
-            data=data,
+            data={"model": self.model, "prompt": self._prompt(), "size": "auto"},
             timeout=self.timeout,
         )
         self._raise_for_status(response)
         repaired = self._extract_image_from_response(response.json())
         if repaired is None:
-            raise RuntimeError("OpenAI 兼容接口没有返回图片数据，请确认该模型支持 /images/edits。")
+            raise RuntimeError("OpenAI 兼容接口没有返回图片，请确认该模型支持 /images/edits。")
         return repaired
 
     def _chat_image_edit(self, image: Image.Image, mask: np.ndarray) -> Image.Image:
         mask_ref = self._mask_reference(image, mask)
         payload = {
             "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": self._prompt()},
-                        {"type": "image_url", "image_url": {"url": self._data_url(image)}},
-                        {"type": "image_url", "image_url": {"url": self._data_url(mask_ref)}},
-                    ],
-                }
-            ],
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": self._prompt()},
+                {"type": "image_url", "image_url": {"url": self._data_url(image)}},
+                {"type": "image_url", "image_url": {"url": self._data_url(mask_ref)}},
+            ]}],
             "max_tokens": 4096,
         }
         response = requests.post(
             f"{self.base_url}/chat/completions",
-            headers=self._headers(),
-            json=payload,
-            timeout=self.timeout,
+            headers=self._headers(), json=payload, timeout=self.timeout,
         )
         self._raise_for_status(response)
         repaired = self._extract_image_from_response(response.json())
         if repaired is None:
             raise RuntimeError(
-                "接口返回成功但没有图片。请确认该 Gemini 模型支持图片输出/编辑；" 
-                "普通文本 Gemini 模型不能直接完成图片修复。"
+                "接口返回成功但没有图片。请确认这个 Gemini 模型支持图片输出/编辑，而不是只有图片理解。"
             )
         return repaired
 
@@ -200,13 +177,12 @@ class RCImageEngine:
 
     def repair(self, image: Image.Image, mask: np.ndarray) -> Image.Image:
         if not self.available:
-            raise RuntimeError("未配置第三方 API。请在 .env 设置 RC_API_KEY、RC_API_BASE_URL 和模型名。")
+            raise RuntimeError("未配置第三方 API。请设置 RC_API_KEY、RC_API_BASE_URL 和模型名。")
         image = image.convert("RGB")
         mask = np.where(np.asarray(mask) > 30, 255, 0).astype(np.uint8)
-        expanded = Image.fromarray(mask, "L").filter(ImageFilter.MaxFilter(9))
-        mask = np.asarray(expanded, dtype=np.uint8)
-
+        mask = np.asarray(Image.fromarray(mask, "L").filter(ImageFilter.MaxFilter(9)), dtype=np.uint8)
         work_image, work_mask, box = self._crop_region(image, mask)
+
         if self.provider == "openai" and self.model.lower().startswith("gpt-image"):
             repaired = self._openai_image_edit(work_image, work_mask)
         else:
@@ -214,7 +190,6 @@ class RCImageEngine:
 
         if repaired.size != work_image.size:
             repaired = repaired.resize(work_image.size, Image.Resampling.LANCZOS)
-
         result = image.copy()
         alpha = Image.fromarray(mask, "L").filter(ImageFilter.GaussianBlur(1.5))
         result.paste(repaired, box, alpha)
