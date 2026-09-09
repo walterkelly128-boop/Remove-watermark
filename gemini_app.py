@@ -13,7 +13,8 @@ local_engine=InpaintEngine(); PROVIDER_COST={"local":0,"gemini":1,"openai":2}
 def _engine_status(p):
  if p=="local": return "● 已就绪","本地 LaMa · CPU · 免费"
  e=RCImageEngine(p); return ("● 已配置" if e.api_key else "○ 未配置",f"{p.title()} · {e.model} · 每次 {PROVIDER_COST[p]} 次额度")
-def refresh_status(): return sum((_engine_status(p) for p in ("local","gemini","openai")),())
+def refresh_status(*_):
+ return sum((_engine_status(p) for p in ("local","gemini","openai")),())
 def account_text(u): return f"### 👤 {u['username']} · {'管理员' if u['is_admin'] else '普通用户'}\n**剩余额度：{u['credits']} 次**" if u else ""
 def _client_ip(request):
  if request is None:return ""
@@ -35,8 +36,6 @@ def auth_register(username,password):
  ok,m=accounts.register(username,password); return f"{'✅' if ok else '❌'} {m}",gr.update(value=username if ok else None)
 def logout(token):
  accounts.revoke_session(token)
- # Logging out must never hide the public tools. Guests keep access to the
- # watermark tool and compression tool; only account state is cleared.
  return None,None,None,gr.update(visible=True),gr.update(visible=True),gr.update(visible=False),"","",gr.update(visible=False)
 def require_user(uid,token,csrf=None,admin=False):
  if not uid or not token:return None,"请先登录。"
@@ -199,8 +198,7 @@ with gr.Blocks(title="AI 图片智能修复",theme=gr.themes.Soft(),css=CSS+CARD
     recharge_choice=gr.Radio(recharge.package_choices(),label="充值套餐",value=recharge.package_choices()[0] if recharge.package_choices() else None)
     recharge_note=gr.Textbox(label="付款说明 / 流水号（可选）",placeholder="例如：微信/支付宝转账后填写末四位或备注，方便管理员核对",max_lines=2)
     recharge_submit_btn=gr.Button("提交充值申请",variant="primary")
-    recharge_message=gr.Markdown()
-    recharge_refresh_btn=gr.Button("刷新充值记录")
+    recharge_message=gr.Markdown(); recharge_refresh_btn=gr.Button("刷新充值记录")
     recharge_table=gr.Dataframe(headers=["订单号","额度","金额","状态","付款说明","申请时间","审核时间"],interactive=False)
    with gr.Tab("📊 使用记录"):
     usage_table=gr.Dataframe(headers=["时间","引擎","额度","成功","详情"],interactive=False); refresh_usage_btn=gr.Button("刷新记录")
