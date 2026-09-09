@@ -1,8 +1,14 @@
 from __future__ import annotations
-import hashlib, hmac, os, secrets, sqlite3
+import base64, hashlib, hmac, os, secrets, sqlite3, struct, time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-DB_PATH=Path(os.getenv("ACCOUNT_DB_PATH","/app/data/accounts.db")); FREE_CREDITS=int(os.getenv("FREE_CREDITS","5")); GUEST_CREDITS=int(os.getenv("GUEST_CREDITS","5")); ADMIN_USERNAME=os.getenv("ADMIN_USERNAME","admin"); ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD",""); GUEST_IP_SALT=os.getenv("GUEST_IP_SALT","") or secrets.token_hex(32)
+
+DB_PATH=Path(os.getenv("ACCOUNT_DB_PATH","/app/data/accounts.db"))
+FREE_CREDITS=int(os.getenv("FREE_CREDITS","5")); GUEST_CREDITS=int(os.getenv("GUEST_CREDITS","5"))
+ADMIN_USERNAME=os.getenv("ADMIN_USERNAME","admin"); ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD","")
+GUEST_IP_SALT=os.getenv("GUEST_IP_SALT","") or secrets.token_hex(32)
+SESSION_TTL_MINUTES=int(os.getenv("SESSION_TTL_MINUTES","720")); SESSION_IDLE_MINUTES=int(os.getenv("SESSION_IDLE_MINUTES","120"))
+ADMIN_TOTP_SECRET=os.getenv("ADMIN_TOTP_SECRET","").replace(" ","").upper(); ADMIN_TOTP_REQUIRED=os.getenv("ADMIN_TOTP_REQUIRED","1") == "1"
 PBKDF2_ROUNDS=600000; LOGIN_MAX_FAILURES=5; LOGIN_LOCK_MINUTES=15
 
 def _now(): return datetime.now(timezone.utc).isoformat()
@@ -15,15 +21,54 @@ def _verify_password(password,stored):
   _,rounds,salt,digest=stored.split("$",3); test=hashlib.pbkdf2_hmac("sha256",password.encode("utf-8"),bytes.fromhex(salt),int(rounds)); return hmac.compare_digest(test.hex(),digest)
  except Exception:return False
 def _guest_key(ip): return hmac.new(GUEST_IP_SALT.encode("utf-8"),ip.encode("utf-8"),hashlib.sha256).hexdigest()
+def _token_hash(token): return hashlib.sha256(token.encode("utf-8")).hexdigest()
+def _device_hash(user_agent): return hashlib.sha256((user_agent or "").encode("utf-8")).hexdigest()[:32]
 def _migrate_columns(db):
  cols={r[1] for r in db.execute("PRAGMA table_info(users)").fetchall()}
  for name,definition in (("disabled","INTEGER NOT NULL DEFAULT 0"),("is_admin","INTEGER NOT NULL DEFAULT 0"),("failed_logins","INTEGER NOT NULL DEFAULT 0"),("locked_until","TEXT")):
   if name not in cols: db.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
+def _totp(secret,step=None):
+ try:
+  raw=base64.b32decode(secret + "="*((8-len(secret)%8)%8),casefold=True); counter=int(time.time()//30) if step is None else int(step)
+  msg=struct.pack(">Q",counter); digest=hmac.new(raw,msg,hashlib.sha1).digest(); off=digest[-1]&15; code=(struct.unpack(">I",digest[off:off+4])[0]&0x7fffffff)%1000000; return f"{code:06d}"
+ except Exception:return ""
+def verify_admin_2fa(code):
+ if not ADMIN_TOTP_SECRET:return not ADMIN_TOTP_REQUIRED
+ code="".join(ch for ch in str(code or "") if ch.isdigit())
+ if len(code)!=6:return False
+ now=int(time.time()//30)
+ return any(hmac.compare_digest(_totp(ADMIN_TOTP_SECRET,now+i),code) for i in (-1,0,1))
 def init_db():
  with _connect() as db:
-  db.executescript('''CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,credits INTEGER NOT NULL DEFAULT 0,disabled INTEGER NOT NULL DEFAULT 0,is_admin INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,last_login TEXT,failed_logins INTEGER NOT NULL DEFAULT 0,locked_until TEXT); CREATE TABLE IF NOT EXISTS usage_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT NOT NULL,provider TEXT NOT NULL,credits INTEGER NOT NULL,success INTEGER NOT NULL,detail TEXT,created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id)); CREATE TABLE IF NOT EXISTS admin_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,admin_user_id INTEGER NOT NULL,admin_username TEXT NOT NULL,action TEXT NOT NULL,target_user_id INTEGER,target_username TEXT,detail TEXT,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS guest_usage(id INTEGER PRIMARY KEY AUTOINCREMENT,guest_key TEXT UNIQUE NOT NULL,credits INTEGER NOT NULL,created_at TEXT NOT NULL,last_used_at TEXT NOT NULL,total_used INTEGER NOT NULL DEFAULT 0); CREATE INDEX IF NOT EXISTS idx_users_username ON users(username); CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_logs(user_id,created_at DESC); CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit(created_at DESC); CREATE INDEX IF NOT EXISTS idx_guest_last_used ON guest_usage(last_used_at DESC);''')
+  db.executescript('''CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,credits INTEGER NOT NULL DEFAULT 0,disabled INTEGER NOT NULL DEFAULT 0,is_admin INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,last_login TEXT,failed_logins INTEGER NOT NULL DEFAULT 0,locked_until TEXT); CREATE TABLE IF NOT EXISTS usage_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT NOT NULL,provider TEXT NOT NULL,credits INTEGER NOT NULL,success INTEGER NOT NULL,detail TEXT,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS admin_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,admin_user_id INTEGER NOT NULL,admin_username TEXT NOT NULL,action TEXT NOT NULL,target_user_id INTEGER,target_username TEXT,detail TEXT,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS guest_usage(id INTEGER PRIMARY KEY AUTOINCREMENT,guest_key TEXT UNIQUE NOT NULL,credits INTEGER NOT NULL,created_at TEXT NOT NULL,last_used_at TEXT NOT NULL,total_used INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS sessions(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,token_hash TEXT UNIQUE NOT NULL,csrf_hash TEXT NOT NULL,ip TEXT,device_hash TEXT,user_agent TEXT,created_at TEXT NOT NULL,last_seen_at TEXT NOT NULL,expires_at TEXT NOT NULL,revoked INTEGER NOT NULL DEFAULT 0,second_factor INTEGER NOT NULL DEFAULT 0); CREATE INDEX IF NOT EXISTS idx_users_username ON users(username); CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_logs(user_id,created_at DESC); CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit(created_at DESC); CREATE INDEX IF NOT EXISTS idx_guest_last_used ON guest_usage(last_used_at DESC); CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id,revoked,expires_at); CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_hash);''')
   _migrate_columns(db)
   if ADMIN_PASSWORD and not db.execute("SELECT id FROM users WHERE username=?",(ADMIN_USERNAME,)).fetchone(): db.execute("INSERT INTO users(username,password_hash,is_admin,created_at) VALUES(?,?,1,?)",(ADMIN_USERNAME,_hash_password(ADMIN_PASSWORD)))
+def create_session(user_id,ip="",user_agent="",second_factor=False):
+ token=secrets.token_urlsafe(48); csrf=secrets.token_urlsafe(32); now=datetime.now(timezone.utc); exp=now+timedelta(minutes=SESSION_TTL_MINUTES)
+ with _connect() as db: db.execute("INSERT INTO sessions(user_id,token_hash,csrf_hash,ip,device_hash,user_agent,created_at,last_seen_at,expires_at,second_factor) VALUES(?,?,?,?,?,?,?,?,?,?)",(user_id,_token_hash(token),_token_hash(csrf),ip,_device_hash(user_agent),(user_agent or "")[:500],now.isoformat(),now.isoformat(),exp.isoformat(),int(second_factor)))
+ return token,csrf
+def validate_session(token,csrf=None,require_admin=False,refresh=True):
+ if not token:return None,"会话不存在，请重新登录。"
+ now=datetime.now(timezone.utc)
+ with _connect() as db:
+  row=db.execute("SELECT s.*,u.username,u.credits,u.disabled,u.is_admin FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?",(_token_hash(token),)).fetchone()
+  if not row:return None,"会话无效，请重新登录。"
+  if row['revoked'] or row['disabled']:return None,"会话已失效，请重新登录。"
+  try:
+   if datetime.fromisoformat(row['expires_at'])<=now:return None,"登录会话已过期，请重新登录。"
+   if datetime.fromisoformat(row['last_seen_at'])+timedelta(minutes=SESSION_IDLE_MINUTES)<=now:return None,"会话空闲超时，请重新登录。"
+  except Exception:return None,"会话时间无效，请重新登录。"
+  if csrf is not None and not hmac.compare_digest(_token_hash(csrf),row['csrf_hash']):return None,"CSRF 校验失败，请刷新页面后重试。"
+  if require_admin and not row['is_admin']:return None,"无管理员权限。"
+  if refresh: db.execute("UPDATE sessions SET last_seen_at=? WHERE id=?",(now.isoformat(),row['id']))
+  return dict(row),"会话有效。"
+def revoke_session(token):
+ if token:
+  with _connect() as db: db.execute("UPDATE sessions SET revoked=1 WHERE token_hash=?",(_token_hash(token),))
+def revoke_user_sessions(user_id):
+ with _connect() as db: db.execute("UPDATE sessions SET revoked=1 WHERE user_id=?",(user_id,))
+def session_list(user_id,limit=50):
+ with _connect() as db:return [dict(r) for r in db.execute("SELECT id,ip,device_hash,user_agent,created_at,last_seen_at,expires_at,revoked,second_factor FROM sessions WHERE user_id=? ORDER BY id DESC LIMIT ?",(user_id,limit)).fetchall()]
 def register(username,password):
  username=(username or '').strip()
  if len(username)<3 or len(username)>32:return False,"用户名需要 3-32 个字符。"
@@ -32,12 +77,13 @@ def register(username,password):
   with _connect() as db: db.execute("INSERT INTO users(username,password_hash,credits,created_at) VALUES(?,?,?,?)",(username,_hash_password(password),FREE_CREDITS,_now()))
   return True,f"注册成功，已赠送 {FREE_CREDITS} 次额度。"
  except sqlite3.IntegrityError:return False,"用户名已存在。"
-def login(username,password):
+def login(username,password,ip="",user_agent="",totp_code=""):
  username=(username or '').strip()
  with _connect() as db:
   row=db.execute("SELECT * FROM users WHERE username=?",(username,)).fetchone()
   if not row:return None,"用户名或密码错误。"
   if row['disabled']:return None,"账号已被禁用。"
+  if row['is_admin'] and not verify_admin_2fa(totp_code):return None,"管理员需要输入正确的 6 位二次验证码。"
   locked=row['locked_until']
   if locked:
    try:
@@ -50,18 +96,23 @@ def login(username,password):
     until=(datetime.now(timezone.utc)+timedelta(minutes=LOGIN_LOCK_MINUTES)).isoformat(); db.execute("UPDATE users SET failed_logins=?,locked_until=? WHERE id=?",(failures,until,row['id']))
     return None,"登录失败次数过多，账号已临时锁定 15 分钟。"
    db.execute("UPDATE users SET failed_logins=? WHERE id=?",(failures,row['id'])); return None,"用户名或密码错误。"
-  db.execute("UPDATE users SET last_login=?,failed_logins=0,locked_until=NULL WHERE id=?",(_now(),row['id'])); row=dict(row); row['failed_logins']=0; row['locked_until']=None; return row,"登录成功。"
+  db.execute("UPDATE users SET last_login=?,failed_logins=0,locked_until=NULL WHERE id=?",(_now(),row['id'])); row=dict(row); row['failed_logins']=0; row['locked_until']=None
+  token,csrf=create_session(row['id'],ip,user_agent,bool(row['is_admin'])); row['session_token']=token; row['csrf_token']=csrf; return row,"登录成功。"
 def get_user(user_id):
  with _connect() as db:
   r=db.execute("SELECT * FROM users WHERE id=?",(user_id,)).fetchone(); return dict(r) if r else None
-def change_password(user_id,current_password,new_password):
+def change_password(user_id,current_password,new_password,session_token=None,csrf_token=None):
+ if not session_token:return False,"会话无效，请重新登录。"
+ s,m=validate_session(session_token,csrf_token)
+ if not s or int(s['user_id'])!=int(user_id):return False,m
  if len(new_password or '')<8:return False,"新密码至少 8 位。"
  with _connect() as db:
   r=db.execute("SELECT * FROM users WHERE id=?",(user_id,)).fetchone()
   if not r:return False,"账户不存在。"
   if not _verify_password(current_password or '',r['password_hash']):return False,"当前密码错误。"
   if hmac.compare_digest(current_password or '',new_password or ''):return False,"新密码不能与旧密码相同。"
-  db.execute("UPDATE users SET password_hash=?,failed_logins=0,locked_until=NULL WHERE id=?",(_hash_password(new_password),user_id)); return True,"密码修改成功，请重新登录。"
+  db.execute("UPDATE users SET password_hash=?,failed_logins=0,locked_until=NULL WHERE id=?",(_hash_password(new_password),user_id))
+ revoke_user_sessions(user_id); return True,"密码修改成功，请重新登录。"
 def consume_credit(user_id,provider,cost=1):
  with _connect() as db:
   db.execute("BEGIN IMMEDIATE"); r=db.execute("SELECT * FROM users WHERE id=?",(user_id,)).fetchone()
@@ -75,8 +126,7 @@ def consume_guest(ip,provider,cost=1):
  if cost<=0:return True,"免费操作。"
  key=_guest_key(ip); now=_now()
  with _connect() as db:
-  db.execute("BEGIN IMMEDIATE")
-  row=db.execute("SELECT * FROM guest_usage WHERE guest_key=?",(key,)).fetchone()
+  db.execute("BEGIN IMMEDIATE"); row=db.execute("SELECT * FROM guest_usage WHERE guest_key=?",(key,)).fetchone()
   if not row:
    remaining=GUEST_CREDITS-cost
    if remaining<0:return False,f"游客免费额度为 {GUEST_CREDITS} 次，请注册或登录后继续。"
