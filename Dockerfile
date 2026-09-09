@@ -10,8 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libgl1 libgomp1 libsm6 libxext6 libxrender1 \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /var/cache/apt/*
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 WORKDIR /app
 COPY requirements.txt .
@@ -19,13 +18,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     && python -m pip install --only-binary=:all: -r requirements.txt \
     && rm -rf /root/.cache/pip
 
-COPY app.py .
-COPY gemini_app.py .
-COPY tools_app.py .
-COPY image_compress.py .
-COPY ai_provider_engine.py .
-COPY account_system.py .
-COPY recharge_system.py .
+COPY app.py gemini_app.py tools_app.py image_compress.py ai_provider_engine.py account_system.py recharge_system.py ./
 COPY core ./core
 RUN mkdir -p /app/models /app/data /app/data/output
 
