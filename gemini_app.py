@@ -3,6 +3,7 @@ from __future__ import annotations
 import traceback
 import numpy as np
 import gradio as gr
+from PIL import Image
 
 from app import CSS, EDITOR_JS, _pil, auto_detect, decode_mask, reset_editor
 from ai_provider_engine import RCImageEngine
@@ -24,7 +25,8 @@ def ai_restore(provider, image, mask_data):
 
     try:
         if provider == "本地 LaMa（CPU）":
-            return local_engine.run(pil, __import__("PIL").Image.fromarray(mask.astype("uint8"), "L"))
+            mask_image = Image.fromarray(mask.astype(np.uint8), "L")
+            return local_engine.run(pil, mask_image)
 
         api_provider = "gemini" if provider == "Gemini" else "openai"
         engine = RCImageEngine(api_provider)
