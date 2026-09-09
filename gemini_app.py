@@ -7,6 +7,8 @@ from app import CSS, EDITOR_JS, _pil, auto_detect, decode_mask, reset_editor
 from ai_provider_engine import RCImageEngine
 from core.inpaint_engine import InpaintEngine
 import account_system as accounts
+import recharge_system as recharge
+
 local_engine=InpaintEngine(); PROVIDER_COST={"local":0,"gemini":1,"openai":2}
 def _engine_status(p):
  if p=="local": return "● 已就绪","本地 LaMa · CPU · 免费"
@@ -78,16 +80,16 @@ def ai_restore(provider,image,mask_data,user_id,session_token,csrf_token,request
    elif guest_ip: accounts.refund_guest(guest_ip,cost)
   if user_id: accounts.log_usage(user_id,provider,cost,False,str(exc))
   traceback.print_exc(); raise gr.Error(f"修复失败：{type(exc).__name__}: {exc}") from exc
-def admin_users_view(keyword=""): 
+
+def admin_users_view(keyword=""):
  rows=accounts.admin_users(keyword); return [[r["id"],r["username"],r["credits"],"禁用" if r.get("disabled") else "正常","管理员" if r["is_admin"] else "用户",r["created_at"],r["last_login"] or "-"] for r in rows]
 def admin_logs(uid=None):
  rows=accounts.usage_for_user(int(uid)) if uid else accounts.admin_usage(); return [[r["id"],r["username"],r["provider"],r["credits"],"成功" if r["success"] else "失败",r["detail"] or "",r["created_at"]] for r in rows]
 def admin_audits():
  rows=accounts.admin_audit_logs(); return [[r["id"],r["admin_username"],r["action"],r["target_username"] or "-",r["detail"] or "",r["created_at"]] for r in rows]
 def admin_stats():
- s=accounts.stats(); return f"### 📊 管理员统计\n**用户：{s['users']}**　**活跃：{s['active']}**　**剩余额度：{s['credits']}**　**总记录：{s['total_usage']}**　**成功：{s['success']}**\n\n✨ Gemini：**{s['gemini']}**　◉ OpenAI：**{s['openai']}**　🖥️ LaMa：**{s['local']}**\n\n👥 游客 IP：**{s['guests']}**　🎁 游客已使用：**{s['guest_used']}** 次"
-def _admin(uid,token,csrf):
- return require_user(uid,token,csrf,True)
+ s=accounts.stats(); return f"### 📊 管理员统计\n**用户：{s['users']}**　**活跃：{s['active']}**　**剩余额度：{s['credits']}**　**总记录：{s['total_usage']}**　**成功：{s['success']}**\n\n✨ Gemini：**{s['gemini']}**　◉ OpenAI：**{s['openai']}**　🖥️ LaMa：**{s['local']}**\n\n👥 游客 IP：**{s['guests']}**　🎁 游客已使用：**{s['guest_used']}** 次　💰 待审核充值：**{recharge.pending_count()}**"
+def _admin(uid,token,csrf): return require_user(uid,token,csrf,True)
 def admin_adjust(uid,token,csrf,target,amount,mode):
  s,m=_admin(uid,token,csrf)
  if not s:return f"❌ {m}",[],[]
@@ -122,8 +124,7 @@ def admin_refresh_view(uid,token,csrf):
  if not s:return f"❌ {m}",[],[]
  return admin_stats(),admin_users_view(),admin_logs()
 def admin_search_view(uid,token,csrf,keyword):
- s,m=_admin(uid,token,csrf)
- return admin_users_view(keyword) if s else []
+ s,m=_admin(uid,token,csrf); return admin_users_view(keyword) if s else []
 def admin_usage_view(uid,token,csrf):
  s,m=_admin(uid,token,csrf); return admin_logs() if s else []
 def admin_audit_view(uid,token,csrf):
@@ -132,11 +133,36 @@ def usage_view(uid,token,csrf):
  s,m=require_user(uid,token,csrf)
  if not s:return []
  return [[r["created_at"],r["provider"],r["credits"],"成功" if r["success"] else "失败",r["detail"]] for r in accounts.usage_for_user(uid)]
+
+def recharge_submit(uid,token,csrf,choice,note):
+ s,m=require_user(uid,token,csrf)
+ if not s:return "❌ "+m, recharge_user_orders(uid) if uid else []
+ ok,msg,_=recharge.create_order(uid,choice,note)
+ return ("✅ "+msg if ok else "❌ "+msg), recharge_user_orders(uid)
+def recharge_user_orders(uid):
+ if not uid:return []
+ rows=recharge.user_orders(uid)
+ return [[r["order_no"],r["credits"],f"¥{r['amount']:g}",r["status"],r["payment_note"] or "",r["created_at"],r["reviewed_at"] or "-"] for r in rows]
+def recharge_history_view(uid,token,csrf):
+ s,m=require_user(uid,token,csrf); return recharge_user_orders(uid) if s else []
+def admin_recharge_orders(uid,token,csrf,status="all"):
+ s,m=_admin(uid,token,csrf)
+ if not s:return []
+ rows=recharge.admin_orders(status)
+ return [[r["id"],r["order_no"],r["user_id"],r["username"],r["credits"],f"¥{r['amount']:g}",r["payment_note"] or "",r["status"],r["admin_username"] or "-",r["admin_note"] or "",r["created_at"],r["reviewed_at"] or "-"] for r in rows]
+def admin_recharge_review(uid,token,csrf,order_id,approve,note):
+ s,m=_admin(uid,token,csrf)
+ if not s:return "❌ "+m,[]
+ try: oid=int(order_id)
+ except Exception:return "❌ 请输入有效的订单 ID。",admin_recharge_orders(uid,token,csrf)
+ ok,msg=recharge.review_order(uid,oid,approve,note)
+ return ("✅ "+msg if ok else "❌ "+msg),admin_recharge_orders(uid,token,csrf)
+
 CARD_CSS=""".engine-card{border:1px solid var(--border-color-primary);border-radius:14px;padding:16px;min-height:145px}.engine-card:hover{border-color:var(--primary-500);transform:translateY(-2px)}"""
 with gr.Blocks(title="AI 图片智能修复",theme=gr.themes.Soft(),css=CSS+CARD_CSS,head=EDITOR_JS) as demo:
  user_id=gr.State(None); session_token=gr.State(None); csrf_token=gr.State(None)
  with gr.Column(visible=True) as auth_panel:
-  gr.Markdown("# 🔐 AI 图片智能修复\n未登录可免费体验 5 次 AI 修复；注册/登录后可通过充值获得更多额度。")
+  gr.Markdown("# 🔐 AI 图片智能修复\n未登录可免费体验 5 次 AI 修复；注册/登录后可通过手动充值获得更多额度。")
   with gr.Tabs():
    with gr.Tab("登录"):
     login_user=gr.Textbox(label="用户名"); login_pass=gr.Textbox(label="密码",type="password"); login_totp=gr.Textbox(label="管理员二次验证码（6位，可选）",type="password"); login_btn=gr.Button("登录",variant="primary")
@@ -165,10 +191,24 @@ with gr.Blocks(title="AI 图片智能修复",theme=gr.themes.Soft(),css=CSS+CARD
      with gr.Column(elem_classes=["engine-card"]): gr.Markdown("### ✨ Gemini"); gemini_status=gr.Markdown("○ 检测中…"); gemini_desc=gr.Markdown("每次 1 次额度"); gemini_btn=gr.Button("选择 Gemini")
      with gr.Column(elem_classes=["engine-card"]): gr.Markdown("### ◉ OpenAI"); openai_status=gr.Markdown("○ 检测中…"); openai_desc=gr.Markdown("每次 2 次额度"); openai_btn=gr.Button("选择 OpenAI")
     selected=gr.State("local"); selected_text=gr.Markdown("**当前引擎：本地 LaMa（免费）**"); restore_btn=gr.Button("🚀 开始修复",variant="primary"); result=gr.Image(label="修复结果",type="pil",format="png")
+   with gr.Tab("💰 充值额度"):
+    gr.Markdown("## 手动充值\n选择套餐后提交充值申请。管理员确认收款后，会手动审核并自动增加你的额度。**本版本不接入任何线上自动支付。**")
+    gr.Markdown(recharge.payment_instructions())
+    recharge_choice=gr.Radio(recharge.package_choices(),label="充值套餐",value=recharge.package_choices()[0] if recharge.package_choices() else None)
+    recharge_note=gr.Textbox(label="付款说明 / 流水号（可选）",placeholder="例如：微信/支付宝转账后填写末四位或备注，方便管理员核对",max_lines=2)
+    recharge_submit_btn=gr.Button("提交充值申请",variant="primary")
+    recharge_message=gr.Markdown()
+    recharge_refresh_btn=gr.Button("刷新充值记录")
+    recharge_table=gr.Dataframe(headers=["订单号","额度","金额","状态","付款说明","申请时间","审核时间"],interactive=False)
    with gr.Tab("📊 使用记录"):
     usage_table=gr.Dataframe(headers=["时间","引擎","额度","成功","详情"],interactive=False); refresh_usage_btn=gr.Button("刷新记录")
    with gr.Tab("⚙️ 管理后台",visible=False) as admin_tab:
     admin_stat=gr.Markdown(); admin_refresh=gr.Button("🔄 刷新统计")
+    gr.Markdown("## 💰 充值订单管理")
+    with gr.Row(): recharge_status_filter=gr.Radio(["all","pending","approved","rejected"],value="pending",label="订单状态"); admin_recharge_refresh=gr.Button("刷新充值订单")
+    recharge_orders_table=gr.Dataframe(headers=["ID","订单号","用户ID","用户名","额度","金额","付款说明","状态","审核管理员","管理员备注","申请时间","审核时间"],interactive=False)
+    with gr.Row(): recharge_order_id=gr.Number(label="订单 ID",precision=0); recharge_approve=gr.Button("✅ 通过并增加额度",variant="primary"); recharge_reject=gr.Button("❌ 拒绝申请")
+    recharge_admin_note=gr.Textbox(label="管理员备注",placeholder="可填写收款核对结果或拒绝原因",max_lines=2); recharge_admin_message=gr.Markdown()
     gr.Markdown("## 👥 用户管理")
     with gr.Row(): admin_search=gr.Textbox(label="搜索用户名"); admin_search_btn=gr.Button("🔎 搜索"); admin_all_btn=gr.Button("显示全部")
     users_table=gr.Dataframe(headers=["ID","用户名","额度","状态","角色","注册时间","最后登录"],interactive=False)
@@ -179,7 +219,10 @@ with gr.Blocks(title="AI 图片智能修复",theme=gr.themes.Soft(),css=CSS+CARD
  login_btn.click(auth_login,[login_user,login_pass,login_totp],[user_id,session_token,csrf_token,auth_panel,app_panel,auth_message,account_info,admin_tab]); reg_btn.click(auth_register,[reg_user,reg_pass],[auth_message,login_user]); logout_btn.click(logout,[session_token],[user_id,session_token,csrf_token,auth_panel,app_panel,auth_message,account_info,admin_tab]); change_pass_btn.click(change_my_password,[user_id,session_token,csrf_token,old_pass,new_pass],password_message)
  source.change(reset_editor,source,[editor,mask_data]); auto_btn.click(auto_detect,source,[preview,editor,status,mask_data],show_progress="minimal"); clear_btn.click(reset_editor,source,[editor,mask_data]); demo.load(refresh_status,[local_status,local_desc,gemini_status,gemini_desc,openai_status,openai_desc])
  local_btn.click(lambda:("local","**当前引擎：本地 LaMa（免费）**"),outputs=[selected,selected_text]); gemini_btn.click(lambda:("gemini","**当前引擎：Gemini（1 次额度）**"),outputs=[selected,selected_text]); openai_btn.click(lambda:("openai","**当前引擎：OpenAI（2 次额度）**"),outputs=[selected,selected_text]); restore_btn.click(ai_restore,[selected,source,mask_data,user_id,session_token,csrf_token],result)
+ recharge_submit_btn.click(recharge_submit,[user_id,session_token,csrf_token,recharge_choice,recharge_note],[recharge_message,recharge_table]); recharge_refresh_btn.click(recharge_history_view,[user_id,session_token,csrf_token],recharge_table)
  refresh_usage_btn.click(usage_view,[user_id,session_token,csrf_token],usage_table)
  admin_refresh.click(admin_refresh_view,[user_id,session_token,csrf_token],[admin_stat,users_table,logs_table]); admin_search_btn.click(admin_search_view,[user_id,session_token,csrf_token,admin_search],users_table); admin_all_btn.click(admin_search_view,[user_id,session_token,csrf_token,admin_search],users_table); admin_usage_btn.click(admin_usage_view,[user_id,session_token,csrf_token],logs_table); admin_audit_btn.click(admin_audit_view,[user_id,session_token,csrf_token],audit_table)
+ admin_recharge_refresh.click(admin_recharge_orders,[user_id,session_token,csrf_token,recharge_status_filter],recharge_orders_table); recharge_status_filter.change(admin_recharge_orders,[user_id,session_token,csrf_token,recharge_status_filter],recharge_orders_table)
+ recharge_approve.click(lambda uid,tok,csrf,oid,note:admin_recharge_review(uid,tok,csrf,oid,True,note),[user_id,session_token,csrf_token,recharge_order_id,recharge_admin_note],[recharge_admin_message,recharge_orders_table]); recharge_reject.click(lambda uid,tok,csrf,oid,note:admin_recharge_review(uid,tok,csrf,oid,False,note),[user_id,session_token,csrf_token,recharge_order_id,recharge_admin_note],[recharge_admin_message,recharge_orders_table])
  adjust_btn.click(admin_adjust,[user_id,session_token,csrf_token,target_id,amount,mode],[admin_message,users_table,logs_table]); set_btn.click(admin_set,[user_id,session_token,csrf_token,target_id,set_amount],[admin_message,users_table,logs_table]); disable_btn.click(lambda uid,tok,csrf,t:admin_disable(uid,tok,csrf,t,True),[user_id,session_token,csrf_token,target_id],[admin_message,users_table]); enable_btn.click(lambda uid,tok,csrf,t:admin_disable(uid,tok,csrf,t,False),[user_id,session_token,csrf_token,target_id],[admin_message,users_table])
 if __name__=="__main__": demo.launch(server_name="0.0.0.0",server_port=7860,show_error=True)
