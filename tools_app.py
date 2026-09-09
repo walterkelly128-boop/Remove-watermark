@@ -15,7 +15,10 @@ SITE_CSS = r"""
 .gradio-container{max-width:1180px!important;margin:auto!important}
 .zf-header{border-bottom:1px solid #e8ebf2;padding:14px 0;margin-bottom:18px}
 .zf-logo{font-size:25px;font-weight:850;letter-spacing:-.7px;color:#151a2b}.zf-logo span{color:#5b5bd6}
-.zf-nav{color:#667085;font-size:14px}.zf-account{border:1px solid #e4e7ec;border-radius:12px;padding:8px 14px;background:#fff}
+.zf-logo-link{text-decoration:none!important;color:inherit!important;display:flex;align-items:center;white-space:nowrap}
+.zf-nav{font-size:14px!important;color:#667085!important;display:flex;align-items:center;gap:24px!important}
+.zf-nav a{color:#667085!important;text-decoration:none!important;transition:.2s}.zf-nav a:hover{color:#5b5bd6!important}
+.zf-account{border:1px solid #e4e7ec;border-radius:12px;padding:8px 14px;background:#fff}
 .zf-member{width:100%;max-width:430px;margin:0 0 18px auto;border:1px solid #e4e7ec;border-radius:18px;padding:18px;background:#fff;box-shadow:0 16px 40px rgba(16,24,40,.10)}
 .zf-member-title{font-size:18px;font-weight:800;margin-bottom:10px}.zf-balance{font-size:28px;font-weight:850;color:#5148c9;margin:8px 0 16px}.zf-history{font-size:13px;color:#667085;line-height:1.8}
 .zf-hero{text-align:center;padding:70px 20px 56px;border-radius:28px;background:linear-gradient(180deg,#f6f7ff,#fff);border:1px solid #eceeff;margin-bottom:30px}
@@ -26,6 +29,10 @@ SITE_CSS = r"""
 .zf-muted{color:#667085}.zf-link button{min-height:42px}
 .zf-inner-page{width:100%;max-width:none!important;margin:0!important;padding:8px 3vw 48px!important;box-sizing:border-box}
 .zf-inner-page .zf-tool,.zf-inner-page .engine-card{width:100%;box-sizing:border-box}
+.zf-footer{margin-top:56px;padding:30px 0 12px;border-top:1px solid #e8ebf2;color:#98a2b3;font-size:13px;text-align:center}
+.zf-footer-brand{font-size:16px;font-weight:800;color:#344054;margin-bottom:10px}.zf-footer-brand span{color:#5b5bd6}
+.zf-footer-links{display:flex;justify-content:center;gap:20px;flex-wrap:wrap;margin-bottom:10px}.zf-footer-links a{color:#667085;text-decoration:none}.zf-footer-links a:hover{color:#5b5bd6}
+footer,.gradio-footer,.built-with,.svelte-1ipelgc,.svelte-1ax9xii{display:none!important}
 @media(max-width:700px){.zf-hero h1{font-size:39px!important}.zf-nav{display:none}.zf-inner-page{padding-left:14px!important;padding-right:14px!important}.zf-member{max-width:none}}
 """
 
@@ -179,8 +186,8 @@ def add_header():
     browser_session = gr.BrowserState("", storage_key=BROWSER_STATE_KEY, secret=BROWSER_STATE_SECRET)
 
     with gr.Row(elem_classes=["zf-header"]):
-        gr.HTML('<div class="zf-logo"><span>ZOLFOX</span> Tools</div>')
-        gr.Markdown("图片工具　　PDF 工具　　AI 工具　　更多工具", elem_classes=["zf-nav"])
+        gr.HTML('<a class="zf-logo-link" href="/"><div class="zf-logo"><span>ZOLFOX</span> Tools</div></a>')
+        gr.HTML('''<nav class="zf-nav"><a href="/#image-tools">图片工具</a><a href="/#pdf-tools">PDF 工具</a><a href="/#ai-tools">AI 工具</a><a href="/#more-tools">更多工具</a></nav>''')
         with gr.Column(scale=0, min_width=150):
             login_open = gr.Button("登录 / 注册", size="sm")
 
@@ -225,11 +232,28 @@ def add_header():
     return user_id, session_token, csrf_token
 
 
+def add_footer():
+    gr.HTML('''
+    <footer class="zf-footer">
+      <div class="zf-footer-brand"><span>ZOLFOX</span> Tools</div>
+      <div class="zf-footer-links">
+        <a href="/">首页</a>
+        <a href="/remove-watermark/">图片去水印</a>
+        <a href="/image-compress/">图片压缩</a>
+        <a href="/#pdf-tools">PDF 工具</a>
+        <a href="/#ai-tools">AI 工具</a>
+        <a href="https://www.zolfox.com" target="_blank" rel="noopener">ZOLFOX</a>
+      </div>
+      <div>© ZOLFOX Tools · 实用在线工具箱</div>
+    </footer>
+    ''')
+
+
 def home_demo():
     with gr.Blocks(title="ZOLFOX Tools · 在线工具箱", theme=gr.themes.Soft(), css=SITE_CSS) as demo:
         add_header()
         gr.HTML('<div class="zf-hero"><div class="zf-pill">ZOLFOX Tools · 在线工具箱</div><h1>简单、快速、实用的<br><span style="color:#5b5bd6">在线工具</span></h1><p>图片、PDF、AI 与更多常用工具，持续更新中。<br>无需安装软件，打开浏览器即可使用。</p></div>')
-        gr.Markdown("## 图片工具")
+        gr.Markdown("## 图片工具", elem_id="image-tools")
         with gr.Row():
             with gr.Column(elem_classes=["zf-card"]):
                 gr.Markdown("### ✨ 图片去水印\n自动识别或手动指定需要修复的区域，使用 AI 自然重建图片内容。")
@@ -237,11 +261,16 @@ def home_demo():
             with gr.Column(elem_classes=["zf-card"]):
                 gr.Markdown("### 📦 图片压缩\n快速压缩 JPG、PNG、WebP 图片，在尽量保持画质的同时减小文件体积。")
                 gr.HTML('<a class="zf-link" href="/image-compress/"><button>立即使用 →</button></a>')
-        gr.Markdown("## 更多工具")
+        gr.Markdown("## 更多工具", elem_id="more-tools")
         with gr.Row():
-            for title, desc in [("📄 PDF 转 Word", "将 PDF 文档转换为可编辑文件。"), ("🧩 PDF 合并", "多个 PDF 快速合并。"), ("🤖 AI 图片增强", "提升图片清晰度与细节。")]:
-                with gr.Column(elem_classes=["zf-card"]):
-                    gr.Markdown(f"### {title}\n{desc}\n\n**即将上线**")
+            with gr.Column(elem_classes=["zf-card"]):
+                gr.Markdown("### 📄 PDF 转 Word\n将 PDF 文档转换为可编辑文件。\n\n**即将上线**")
+            with gr.Column(elem_classes=["zf-card"]):
+                gr.Markdown("### 🧩 PDF 合并\n多个 PDF 快速合并。\n\n**即将上线**")
+            with gr.Column(elem_classes=["zf-card"]):
+                gr.Markdown("### 🤖 AI 图片增强\n提升图片清晰度与细节。\n\n**即将上线**")
+        gr.HTML('<div id="pdf-tools" style="position:relative;top:-90px"></div><div id="ai-tools" style="position:relative;top:-90px"></div>')
+        add_footer()
     return demo
 
 
@@ -294,6 +323,7 @@ def remove_demo():
             gemini_btn.click(lambda: ("gemini", "**当前引擎：Gemini（1 积分）**"), outputs=[selected, selected_text])
             openai_btn.click(lambda: ("openai", "**当前引擎：OpenAI（3 积分）**"), outputs=[selected, selected_text])
             restore_btn.click(base.ai_restore, [selected, source, mask_data, user_id, session_token, csrf_token], result)
+            add_footer()
     return demo
 
 
@@ -315,6 +345,7 @@ def compress_demo():
                     compress_output = gr.File(label="压缩结果")
                     compress_info = gr.Markdown("上传图片后开始。")
             compress_btn.click(compress_for_web, [compress_input, compress_quality, compress_format], [compress_output, compress_info])
+            add_footer()
     return demo
 
 
