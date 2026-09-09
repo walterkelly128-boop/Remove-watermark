@@ -81,10 +81,7 @@ def create_order(user_id, choice, payment_note=""):
         return False, "请选择有效的充值套餐。", None
     order_no = "R" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + secrets.token_hex(3).upper()
     with accounts._connect() as db:
-        db.execute(
-            "INSERT INTO recharge_orders(order_no,user_id,username,credits,amount,payment_note,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
-            (order_no, user_id, user["username"], credits, amount, (payment_note or "").strip()[:300], "pending", _now()),
-        )
+        db.execute("INSERT INTO recharge_orders(order_no,user_id,username,credits,amount,payment_note,status,created_at) VALUES(?,?,?,?,?,?,?,?)", (order_no, user_id, user["username"], credits, amount, (payment_note or "").strip()[:300], "pending", _now()))
     return True, f"充值申请已提交：{order_no}，等待管理员审核。", order_no
 
 def user_orders(user_id, limit=50):
@@ -107,6 +104,10 @@ def admin_orders(status="all", limit=500):
             rows = db.execute("SELECT * FROM recharge_orders ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
+def _audit_same_db(db, admin, action, target_user_id, detail):
+    target = db.execute("SELECT username FROM users WHERE id=?", (target_user_id,)).fetchone()
+    db.execute("INSERT INTO admin_audit(admin_user_id,admin_username,action,target_user_id,target_username,detail,created_at) VALUES(?,?,?,?,?,?,?)", (admin["id"], admin["username"], action, target_user_id, target["username"] if target else "", detail[:500], _now()))
+
 def review_order(admin_user_id, order_id, approve, admin_note=""):
     admin = accounts.get_user(admin_user_id)
     if not admin or not admin.get("is_admin"):
@@ -119,14 +120,10 @@ def review_order(admin_user_id, order_id, approve, admin_note=""):
             return False, "充值订单不存在。"
         if order["status"] != "pending":
             return False, f"该订单已经处理，当前状态：{order['status']}。"
-        now = _now()
-        note = (admin_note or "").strip()[:300]
+        now = _now(); note = (admin_note or "").strip()[:300]
         if not approve:
-            db.execute(
-                "UPDATE recharge_orders SET status='rejected',admin_user_id=?,admin_username=?,admin_note=?,reviewed_at=? WHERE id=? AND status='pending'",
-                (admin_user_id, admin["username"], note, now, order_id),
-            )
-            accounts.audit_admin(admin_user_id, "拒绝充值", order["user_id"], f"订单 {order['order_no']}，{note or '未填写原因'}")
+            db.execute("UPDATE recharge_orders SET status='rejected',admin_user_id=?,admin_username=?,admin_note=?,reviewed_at=? WHERE id=? AND status='pending'", (admin_user_id, admin["username"], note, now, order_id))
+            _audit_same_db(db, admin, "拒绝充值", order["user_id"], f"订单 {order['order_no']}，{note or '未填写原因'}")
             return True, f"已拒绝订单 {order['order_no']}。"
         user = db.execute("SELECT * FROM users WHERE id=?", (order["user_id"],)).fetchone()
         if not user:
@@ -135,15 +132,9 @@ def review_order(admin_user_id, order_id, approve, admin_note=""):
         updated = db.execute("UPDATE users SET credits=? WHERE id=?", (new_balance, order["user_id"]))
         if updated.rowcount != 1:
             return False, "增加额度失败。"
-        db.execute(
-            "UPDATE recharge_orders SET status='approved',admin_user_id=?,admin_username=?,admin_note=?,reviewed_at=? WHERE id=? AND status='pending'",
-            (admin_user_id, admin["username"], note, now, order_id),
-        )
-        db.execute(
-            "INSERT INTO credit_transactions(user_id,order_id,type,amount,balance_after,detail,created_at) VALUES(?,?,?,?,?,?,?)",
-            (order["user_id"], order_id, "recharge", int(order["credits"]), new_balance, f"充值订单 {order['order_no']}", now),
-        )
-        accounts.audit_admin(admin_user_id, "通过充值", order["user_id"], f"订单 {order['order_no']}，增加 {order['credits']} 次，余额 {new_balance} 次")
+        db.execute("UPDATE recharge_orders SET status='approved',admin_user_id=?,admin_username=?,admin_note=?,reviewed_at=? WHERE id=? AND status='pending'", (admin_user_id, admin["username"], note, now, order_id))
+        db.execute("INSERT INTO credit_transactions(user_id,order_id,type,amount,balance_after,detail,created_at) VALUES(?,?,?,?,?,?,?)", (order["user_id"], order_id, "recharge", int(order["credits"]), new_balance, f"充值订单 {order['order_no']}", now))
+        _audit_same_db(db, admin, "通过充值", order["user_id"], f"订单 {order['order_no']}，增加 {order['credits']} 次，余额 {new_balance} 次")
         return True, f"已通过订单 {order['order_no']}，用户增加 {order['credits']} 次，当前余额 {new_balance} 次。"
 
 def pending_count():
