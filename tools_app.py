@@ -32,6 +32,9 @@ INNER_CSS = SITE_CSS + r"""
 body{overflow-x:hidden}
 """
 
+BROWSER_STATE_SECRET = os.getenv("BROWSER_STATE_SECRET", "zolfox-browser-session-v1")
+BROWSER_STATE_KEY = "zolfox_shared_session"
+
 
 def _original_size(image):
     filename = getattr(image, "filename", None)
@@ -61,23 +64,86 @@ def compress_for_web(image, quality, output_format):
         raise gr.Error("压缩失败，请更换图片或参数后重试。") from exc
 
 
+def _session_blob(token, csrf):
+    if not token or not csrf:
+        return ""
+    return f"{token}|{csrf}"
+
+
+def restore_session(browser_session):
+    try:
+        blob = (browser_session or "").strip()
+        if not blob or "|" not in blob:
+            raise ValueError("empty session")
+        token, csrf = blob.split("|", 1)
+        session, _ = base.accounts.validate_session(token, csrf)
+        if not session:
+            raise ValueError("invalid session")
+        uid = int(session["user_id"])
+        account = base.account_text(session)
+        name = session["username"]
+        return (
+            uid,
+            token,
+            csrf,
+            gr.update(visible=False),
+            gr.update(visible=True),
+            "",
+            account,
+            gr.update(visible=True),
+            bool(session["is_admin"]),
+            gr.update(value=name, visible=True),
+            browser_session,
+        )
+    except Exception:
+        return (
+            None,
+            None,
+            None,
+            gr.update(visible=True),
+            gr.update(visible=False),
+            "",
+            "",
+            gr.update(visible=False),
+            False,
+            gr.update(value="登录 / 注册", visible=True),
+            "",
+        )
+
+
 def do_login(username, password, totp, request: gr.Request = None):
     try:
         uid, token, csrf, auth_view, logout_view, _app_view, msg, account, admin = base.auth_login(
             username, password, totp, request
         )
         success = bool(uid and token and csrf)
+        display_name = (username or "").strip()
+        if success:
+            return (
+                uid,
+                token,
+                csrf,
+                auth_view,
+                logout_view,
+                msg,
+                account,
+                gr.update(visible=True),
+                bool(admin),
+                gr.update(value=display_name, visible=True),
+                _session_blob(token, csrf),
+            )
         return (
-            uid,
-            token,
-            csrf,
-            auth_view,
-            logout_view,
+            None,
+            None,
+            None,
+            gr.update(visible=True),
+            gr.update(visible=False),
             msg,
-            account if success else "",
-            gr.update(visible=success),
-            gr.update(value=""),
-            gr.update(visible=bool(admin and success)),
+            "",
+            gr.update(visible=False),
+            False,
+            gr.update(value="登录 / 注册", visible=True),
+            "",
         )
     except Exception as exc:
         return (
@@ -89,14 +155,27 @@ def do_login(username, password, totp, request: gr.Request = None):
             f"❌ 登录失败：{type(exc).__name__}: {exc}",
             "",
             gr.update(visible=False),
-            gr.update(value=""),
-            gr.update(visible=False),
+            False,
+            gr.update(value="登录 / 注册", visible=True),
+            "",
         )
 
 
 def do_logout(token):
     base.logout(token)
-    return None, None, None, gr.update(visible=True), gr.update(visible=False), "", "", gr.update(visible=False), False
+    return (
+        None,
+        None,
+        None,
+        gr.update(visible=True),
+        gr.update(visible=False),
+        "",
+        "",
+        gr.update(visible=False),
+        False,
+        gr.update(value="登录 / 注册", visible=True),
+        "",
+    )
 
 
 def add_header():
@@ -104,6 +183,11 @@ def add_header():
     session_token = gr.State(None)
     csrf_token = gr.State(None)
     admin_state = gr.State(False)
+    browser_session = gr.BrowserState(
+        "",
+        storage_key=BROWSER_STATE_KEY,
+        secret=BROWSER_STATE_SECRET,
+    )
     with gr.Row(elem_classes=["zf-header"]):
         gr.HTML('<div class="zf-logo"><span>ZOLFOX</span> Tools</div>')
         gr.Markdown("图片工具　　PDF 工具　　AI 工具　　更多工具", elem_classes=["zf-nav"])
@@ -129,13 +213,18 @@ def add_header():
     login_btn.click(
         do_login,
         [login_user, login_pass, login_totp],
-        [user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, account_bar, login_pass, admin_state],
+        [user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, account_bar, admin_state, login_open, browser_session],
     )
     reg_btn.click(base.auth_register, [reg_user, reg_pass], [auth_message, login_user])
     logout_btn.click(
         do_logout,
         [session_token],
-        [user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, account_bar, admin_state],
+        [user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, account_bar, admin_state, login_open, browser_session],
+    )
+    browser_session.change(
+        restore_session,
+        inputs=[browser_session],
+        outputs=[user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, account_bar, admin_state, login_open, browser_session],
     )
     return user_id, session_token, csrf_token
 
@@ -188,14 +277,14 @@ def remove_demo():
                     local_desc = gr.Markdown("本地 CPU · 免费")
                     local_btn = gr.Button("选择本地", variant="primary")
                 with gr.Column(elem_classes=["zf-card"]):
-                    gr.Markdown("### ✨ Gemini\n每次 1 次额度")
+                    gr.Markdown("### ✨ Gemini\n每次 1 积分")
                     gemini_status = gr.Markdown("○ 检测中…")
-                    gemini_desc = gr.Markdown("每次 1 次额度")
+                    gemini_desc = gr.Markdown("每次 1 积分")
                     gemini_btn = gr.Button("选择 Gemini")
                 with gr.Column(elem_classes=["zf-card"]):
-                    gr.Markdown("### ◉ OpenAI\n每次 3 次额度")
+                    gr.Markdown("### ◉ OpenAI\n每次 3 积分")
                     openai_status = gr.Markdown("○ 检测中…")
-                    openai_desc = gr.Markdown("每次 3 次额度")
+                    openai_desc = gr.Markdown("每次 3 积分")
                     openai_btn = gr.Button("选择 OpenAI")
             selected = gr.State("local")
             selected_text = gr.Markdown("**当前引擎：本地 LaMa（免费）**")
@@ -206,8 +295,8 @@ def remove_demo():
             clear_btn.click(base.reset_editor, source, [editor, mask_data])
             demo.load(base.refresh_status, [local_status, local_desc, gemini_status, gemini_desc, openai_status, openai_desc])
             local_btn.click(lambda: ("local", "**当前引擎：本地 LaMa（免费）**"), outputs=[selected, selected_text])
-            gemini_btn.click(lambda: ("gemini", "**当前引擎：Gemini（1 次额度）**"), outputs=[selected, selected_text])
-            openai_btn.click(lambda: ("openai", "**当前引擎：OpenAI（3 次额度）**"), outputs=[selected, selected_text])
+            gemini_btn.click(lambda: ("gemini", "**当前引擎：Gemini（1 积分）**"), outputs=[selected, selected_text])
+            openai_btn.click(lambda: ("openai", "**当前引擎：OpenAI（3 积分）**"), outputs=[selected, selected_text])
             restore_btn.click(base.ai_restore, [selected, source, mask_data, user_id, session_token, csrf_token], result)
     return demo
 
