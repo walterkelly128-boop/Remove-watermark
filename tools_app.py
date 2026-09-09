@@ -67,9 +67,6 @@ def do_login(username, password, totp, request: gr.Request = None):
             username, password, totp, request
         )
         success = bool(uid and token and csrf)
-        display_name = (username or "").strip()
-        if success and account:
-            display_name = display_name or account.replace("**", "").strip()
         return (
             uid,
             token,
@@ -81,7 +78,6 @@ def do_login(username, password, totp, request: gr.Request = None):
             gr.update(visible=success),
             gr.update(value=""),
             gr.update(visible=bool(admin and success)),
-            gr.update(value=display_name, visible=not success is False and success),
         )
     except Exception as exc:
         return (
@@ -95,13 +91,12 @@ def do_login(username, password, totp, request: gr.Request = None):
             gr.update(visible=False),
             gr.update(value=""),
             gr.update(visible=False),
-            gr.update(value="登录 / 注册", visible=True),
         )
 
 
 def do_logout(token):
     base.logout(token)
-    return None, None, None, gr.update(visible=True), gr.update(visible=False), "", "", gr.update(visible=False), False, gr.update(value="登录 / 注册", visible=True)
+    return None, None, None, gr.update(visible=True), gr.update(visible=False), "", "", gr.update(visible=False), False
 
 
 def add_header():
@@ -134,13 +129,13 @@ def add_header():
     login_btn.click(
         do_login,
         [login_user, login_pass, login_totp],
-        [user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, account_bar, login_pass, admin_state, login_open],
+        [user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, account_bar, login_pass, admin_state],
     )
     reg_btn.click(base.auth_register, [reg_user, reg_pass], [auth_message, login_user])
     logout_btn.click(
         do_logout,
         [session_token],
-        [user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, account_bar, admin_state, login_open],
+        [user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, account_bar, admin_state],
     )
     return user_id, session_token, csrf_token
 
@@ -198,9 +193,9 @@ def remove_demo():
                     gemini_desc = gr.Markdown("每次 1 次额度")
                     gemini_btn = gr.Button("选择 Gemini")
                 with gr.Column(elem_classes=["zf-card"]):
-                    gr.Markdown("### ◉ OpenAI\n每次 2 次额度")
+                    gr.Markdown("### ◉ OpenAI\n每次 3 次额度")
                     openai_status = gr.Markdown("○ 检测中…")
-                    openai_desc = gr.Markdown("每次 2 次额度")
+                    openai_desc = gr.Markdown("每次 3 次额度")
                     openai_btn = gr.Button("选择 OpenAI")
             selected = gr.State("local")
             selected_text = gr.Markdown("**当前引擎：本地 LaMa（免费）**")
@@ -212,7 +207,7 @@ def remove_demo():
             demo.load(base.refresh_status, [local_status, local_desc, gemini_status, gemini_desc, openai_status, openai_desc])
             local_btn.click(lambda: ("local", "**当前引擎：本地 LaMa（免费）**"), outputs=[selected, selected_text])
             gemini_btn.click(lambda: ("gemini", "**当前引擎：Gemini（1 次额度）**"), outputs=[selected, selected_text])
-            openai_btn.click(lambda: ("openai", "**当前引擎：OpenAI（2 次额度）**"), outputs=[selected, selected_text])
+            openai_btn.click(lambda: ("openai", "**当前引擎：OpenAI（3 次额度）**"), outputs=[selected, selected_text])
             restore_btn.click(base.ai_restore, [selected, source, mask_data, user_id, session_token, csrf_token], result)
     return demo
 
