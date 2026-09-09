@@ -26,7 +26,7 @@ def _packages():
     return result or DEFAULT_PACKAGES
 
 def package_choices():
-    return [f"{c} 次 — ¥{p:g}" for c, p in _packages()]
+    return [f"{c} 积分 — ¥{p:g}" for c, p in _packages()]
 
 def package_from_choice(choice):
     choices = package_choices()
@@ -37,7 +37,7 @@ def package_from_choice(choice):
         return None, None
 
 def payment_instructions():
-    return os.getenv("RECHARGE_PAYMENT_INSTRUCTIONS", "请先提交充值申请，管理员确认收款后会手动审核并增加额度。")
+    return os.getenv("RECHARGE_PAYMENT_INSTRUCTIONS", "请先提交充值申请，管理员确认收款后会手动审核并增加积分。")
 
 def init_db():
     with accounts._connect() as db:
@@ -131,11 +131,11 @@ def review_order(admin_user_id, order_id, approve, admin_note=""):
         new_balance = int(user["credits"]) + int(order["credits"])
         updated = db.execute("UPDATE users SET credits=? WHERE id=?", (new_balance, order["user_id"]))
         if updated.rowcount != 1:
-            return False, "增加额度失败。"
+            return False, "增加积分失败。"
         db.execute("UPDATE recharge_orders SET status='approved',admin_user_id=?,admin_username=?,admin_note=?,reviewed_at=? WHERE id=? AND status='pending'", (admin_user_id, admin["username"], note, now, order_id))
         db.execute("INSERT INTO credit_transactions(user_id,order_id,type,amount,balance_after,detail,created_at) VALUES(?,?,?,?,?,?,?)", (order["user_id"], order_id, "recharge", int(order["credits"]), new_balance, f"充值订单 {order['order_no']}", now))
-        _audit_same_db(db, admin, "通过充值", order["user_id"], f"订单 {order['order_no']}，增加 {order['credits']} 次，余额 {new_balance} 次")
-        return True, f"已通过订单 {order['order_no']}，用户增加 {order['credits']} 次，当前余额 {new_balance} 次。"
+        _audit_same_db(db, admin, "通过充值", order["user_id"], f"订单 {order['order_no']}，增加 {order['credits']} 积分，余额 {new_balance} 积分")
+        return True, f"已通过订单 {order['order_no']}，用户增加 {order['credits']} 积分，当前余额 {new_balance} 积分。"
 
 def pending_count():
     with accounts._connect() as db:
