@@ -22,7 +22,14 @@ SITE_CSS = r"""
 .zf-card{border:1px solid #e4e7ec;border-radius:20px;padding:24px;min-height:190px;background:#fff;transition:.2s}.zf-card:hover{box-shadow:0 14px 36px rgba(16,24,40,.08);transform:translateY(-2px)}
 .zf-card h3{margin:12px 0 8px;font-size:21px}.zf-card p{color:#667085;line-height:1.7}.zf-tool{border:1px solid #e4e7ec;border-radius:22px;padding:24px;margin-top:20px;background:#fff}
 .zf-muted{color:#667085}.zf-link button{min-height:42px}
-@media(max-width:700px){.zf-hero h1{font-size:39px!important}.zf-nav{display:none}}
+.zf-inner-page{width:100%;max-width:none!important;margin:0!important;padding:8px 3vw 48px!important;box-sizing:border-box}
+.zf-inner-page .zf-tool,.zf-inner-page .engine-card{width:100%;box-sizing:border-box}
+@media(max-width:700px){.zf-hero h1{font-size:39px!important}.zf-nav{display:none}.zf-inner-page{padding-left:14px!important;padding-right:14px!important}}
+"""
+
+INNER_CSS = SITE_CSS + r"""
+.gradio-container{max-width:none!important;width:100%!important;margin:0!important;padding-left:0!important;padding-right:0!important}
+body{overflow-x:hidden}
 """
 
 
@@ -55,19 +62,48 @@ def compress_for_web(image, quality, output_format):
 
 
 def do_login(username, password, totp, request: gr.Request = None):
-    uid, token, csrf, _auth, _app, _logout, msg, account, admin = base.auth_login(username, password, totp, request)
-    return uid, token, csrf, gr.update(visible=False), gr.update(visible=True), msg, account, admin
+    try:
+        uid, token, csrf, auth_view, logout_view, _app_view, msg, account, admin = base.auth_login(
+            username, password, totp, request
+        )
+        success = bool(uid and token and csrf)
+        return (
+            uid,
+            token,
+            csrf,
+            auth_view,
+            logout_view,
+            msg,
+            account if success else "",
+            gr.update(visible=success),
+            gr.update(value=""),
+            gr.update(visible=bool(admin and success)),
+        )
+    except Exception as exc:
+        return (
+            None,
+            None,
+            None,
+            gr.update(visible=True),
+            gr.update(visible=False),
+            f"❌ 登录失败：{type(exc).__name__}: {exc}",
+            "",
+            gr.update(visible=False),
+            gr.update(value=""),
+            gr.update(visible=False),
+        )
 
 
 def do_logout(token):
     base.logout(token)
-    return None, None, None, gr.update(visible=True), gr.update(visible=False), "", "", gr.update(visible=False)
+    return None, None, None, gr.update(visible=True), gr.update(visible=False), "", "", gr.update(visible=False), False
 
 
 def add_header():
     user_id = gr.State(None)
     session_token = gr.State(None)
     csrf_token = gr.State(None)
+    admin_state = gr.State(False)
     with gr.Row(elem_classes=["zf-header"]):
         gr.HTML('<div class="zf-logo"><span>ZOLFOX</span> Tools</div>')
         gr.Markdown("图片工具　　PDF 工具　　AI 工具　　更多工具", elem_classes=["zf-nav"])
@@ -90,11 +126,17 @@ def add_header():
     with gr.Row(visible=False) as account_bar:
         account_info = gr.Markdown(elem_classes=["zf-account"])
     login_open.click(lambda: gr.update(visible=True), outputs=auth_panel)
-    login_btn.click(do_login, [login_user, login_pass, login_totp], [user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, gr.State()])
+    login_btn.click(
+        do_login,
+        [login_user, login_pass, login_totp],
+        [user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, account_bar, login_pass, admin_state],
+    )
     reg_btn.click(base.auth_register, [reg_user, reg_pass], [auth_message, login_user])
-    logout_btn.click(do_logout, [session_token], [user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, gr.State()])
-    login_btn.click(lambda: gr.update(visible=True), outputs=account_bar)
-    logout_btn.click(lambda: gr.update(visible=False), outputs=account_bar)
+    logout_btn.click(
+        do_logout,
+        [session_token],
+        [user_id, session_token, csrf_token, auth_panel, logout_btn, auth_message, account_info, account_bar, admin_state],
+    )
     return user_id, session_token, csrf_token
 
 
@@ -119,73 +161,75 @@ def home_demo():
 
 
 def remove_demo():
-    with gr.Blocks(title="图片去水印 · ZOLFOX Tools", theme=gr.themes.Soft(), css=SITE_CSS + base.CSS, head=base.EDITOR_JS) as demo:
-        user_id, session_token, csrf_token = add_header()
-        with gr.Row():
-            gr.Markdown("# 🖼️ 图片去水印")
-            gr.HTML('<a href="/"><button>← 工具首页</button></a>')
-        gr.Markdown("自动识别候选区域，也可以使用 Mask 编辑器精确指定需要修复的位置。")
-        with gr.Row():
-            with gr.Column():
-                source = gr.Image(label="原图", type="pil")
-                with gr.Row():
-                    auto_btn = gr.Button("✨ 自动识别候选区域", variant="primary")
-                    clear_btn = gr.Button("清除 Mask")
-                status = gr.Markdown("上传图片后开始。")
-            with gr.Column():
-                preview = gr.Image(label="识别预览", type="pil")
-        gr.Markdown("## Mask 编辑器")
-        editor = gr.HTML(label="Mask 编辑器")
-        mask_data = gr.Textbox(label="", elem_id="mask-data", visible=True, container=False)
-        gr.Markdown("## AI 修复引擎")
-        with gr.Row():
-            with gr.Column(elem_classes=["zf-card"]):
-                gr.Markdown("### 🖥️ 本地 LaMa\n本地 CPU · 免费")
-                local_status = gr.Markdown("● 已就绪")
-                local_desc = gr.Markdown("本地 CPU · 免费")
-                local_btn = gr.Button("选择本地", variant="primary")
-            with gr.Column(elem_classes=["zf-card"]):
-                gr.Markdown("### ✨ Gemini\n每次 1 次额度")
-                gemini_status = gr.Markdown("○ 检测中…")
-                gemini_desc = gr.Markdown("每次 1 次额度")
-                gemini_btn = gr.Button("选择 Gemini")
-            with gr.Column(elem_classes=["zf-card"]):
-                gr.Markdown("### ◉ OpenAI\n每次 2 次额度")
-                openai_status = gr.Markdown("○ 检测中…")
-                openai_desc = gr.Markdown("每次 2 次额度")
-                openai_btn = gr.Button("选择 OpenAI")
-        selected = gr.State("local")
-        selected_text = gr.Markdown("**当前引擎：本地 LaMa（免费）**")
-        restore_btn = gr.Button("🚀 开始修复", variant="primary", elem_id="restore-btn")
-        result = gr.Image(label="修复结果", type="pil", format="png")
-        source.change(base.reset_editor, source, [editor, mask_data])
-        auto_btn.click(base.auto_detect, source, [preview, editor, status, mask_data], show_progress="minimal")
-        clear_btn.click(base.reset_editor, source, [editor, mask_data])
-        demo.load(base.refresh_status, [local_status, local_desc, gemini_status, gemini_desc, openai_status, openai_desc])
-        local_btn.click(lambda: ("local", "**当前引擎：本地 LaMa（免费）**"), outputs=[selected, selected_text])
-        gemini_btn.click(lambda: ("gemini", "**当前引擎：Gemini（1 次额度）**"), outputs=[selected, selected_text])
-        openai_btn.click(lambda: ("openai", "**当前引擎：OpenAI（2 次额度）**"), outputs=[selected, selected_text])
-        restore_btn.click(base.ai_restore, [selected, source, mask_data, user_id, session_token, csrf_token], result)
+    with gr.Blocks(title="图片去水印 · ZOLFOX Tools", theme=gr.themes.Soft(), css=INNER_CSS + base.CSS, head=base.EDITOR_JS) as demo:
+        with gr.Column(elem_classes=["zf-inner-page"]):
+            user_id, session_token, csrf_token = add_header()
+            with gr.Row():
+                gr.Markdown("# 🖼️ 图片去水印")
+                gr.HTML('<a href="/"><button>← 工具首页</button></a>')
+            gr.Markdown("自动识别候选区域，也可以使用 Mask 编辑器精确指定需要修复的位置。")
+            with gr.Row():
+                with gr.Column():
+                    source = gr.Image(label="原图", type="pil")
+                    with gr.Row():
+                        auto_btn = gr.Button("✨ 自动识别候选区域", variant="primary")
+                        clear_btn = gr.Button("清除 Mask")
+                    status = gr.Markdown("上传图片后开始。")
+                with gr.Column():
+                    preview = gr.Image(label="识别预览", type="pil")
+            gr.Markdown("## Mask 编辑器")
+            editor = gr.HTML(label="Mask 编辑器")
+            mask_data = gr.Textbox(label="", elem_id="mask-data", visible=True, container=False)
+            gr.Markdown("## AI 修复引擎")
+            with gr.Row():
+                with gr.Column(elem_classes=["zf-card"]):
+                    gr.Markdown("### 🖥️ 本地 LaMa\n本地 CPU · 免费")
+                    local_status = gr.Markdown("● 已就绪")
+                    local_desc = gr.Markdown("本地 CPU · 免费")
+                    local_btn = gr.Button("选择本地", variant="primary")
+                with gr.Column(elem_classes=["zf-card"]):
+                    gr.Markdown("### ✨ Gemini\n每次 1 次额度")
+                    gemini_status = gr.Markdown("○ 检测中…")
+                    gemini_desc = gr.Markdown("每次 1 次额度")
+                    gemini_btn = gr.Button("选择 Gemini")
+                with gr.Column(elem_classes=["zf-card"]):
+                    gr.Markdown("### ◉ OpenAI\n每次 2 次额度")
+                    openai_status = gr.Markdown("○ 检测中…")
+                    openai_desc = gr.Markdown("每次 2 次额度")
+                    openai_btn = gr.Button("选择 OpenAI")
+            selected = gr.State("local")
+            selected_text = gr.Markdown("**当前引擎：本地 LaMa（免费）**")
+            restore_btn = gr.Button("🚀 开始修复", variant="primary", elem_id="restore-btn")
+            result = gr.Image(label="修复结果", type="pil", format="png")
+            source.change(base.reset_editor, source, [editor, mask_data])
+            auto_btn.click(base.auto_detect, source, [preview, editor, status, mask_data], show_progress="minimal")
+            clear_btn.click(base.reset_editor, source, [editor, mask_data])
+            demo.load(base.refresh_status, [local_status, local_desc, gemini_status, gemini_desc, openai_status, openai_desc])
+            local_btn.click(lambda: ("local", "**当前引擎：本地 LaMa（免费）**"), outputs=[selected, selected_text])
+            gemini_btn.click(lambda: ("gemini", "**当前引擎：Gemini（1 次额度）**"), outputs=[selected, selected_text])
+            openai_btn.click(lambda: ("openai", "**当前引擎：OpenAI（2 次额度）**"), outputs=[selected, selected_text])
+            restore_btn.click(base.ai_restore, [selected, source, mask_data, user_id, session_token, csrf_token], result)
     return demo
 
 
 def compress_demo():
-    with gr.Blocks(title="图片压缩 · ZOLFOX Tools", theme=gr.themes.Soft(), css=SITE_CSS) as demo:
-        add_header()
-        with gr.Row():
-            gr.Markdown("# 📦 图片压缩")
-            gr.HTML('<a href="/"><button>← 工具首页</button></a>')
-        gr.Markdown("快速压缩 JPG、PNG、WebP 图片，在尽量保持画质的同时减小文件体积。")
-        with gr.Row():
-            with gr.Column(elem_classes=["zf-tool"]):
-                compress_input = gr.Image(label="上传图片", type="pil")
-                compress_quality = gr.Slider(10, 95, value=80, step=1, label="压缩质量（越低体积越小）")
-                compress_format = gr.Radio(["保持原格式", "JPG", "PNG", "WebP"], value="保持原格式", label="输出格式")
-                compress_btn = gr.Button("📦 开始压缩", variant="primary")
-            with gr.Column(elem_classes=["zf-tool"]):
-                compress_output = gr.File(label="压缩结果")
-                compress_info = gr.Markdown("上传图片后开始。")
-        compress_btn.click(compress_for_web, [compress_input, compress_quality, compress_format], [compress_output, compress_info])
+    with gr.Blocks(title="图片压缩 · ZOLFOX Tools", theme=gr.themes.Soft(), css=INNER_CSS) as demo:
+        with gr.Column(elem_classes=["zf-inner-page"]):
+            add_header()
+            with gr.Row():
+                gr.Markdown("# 📦 图片压缩")
+                gr.HTML('<a href="/"><button>← 工具首页</button></a>')
+            gr.Markdown("快速压缩 JPG、PNG、WebP 图片，在尽量保持画质的同时减小文件体积。")
+            with gr.Row():
+                with gr.Column(elem_classes=["zf-tool"]):
+                    compress_input = gr.Image(label="上传图片", type="pil")
+                    compress_quality = gr.Slider(10, 95, value=80, step=1, label="压缩质量（越低体积越小）")
+                    compress_format = gr.Radio(["保持原格式", "JPG", "PNG", "WebP"], value="保持原格式", label="输出格式")
+                    compress_btn = gr.Button("📦 开始压缩", variant="primary")
+                with gr.Column(elem_classes=["zf-tool"]):
+                    compress_output = gr.File(label="压缩结果")
+                    compress_info = gr.Markdown("上传图片后开始。")
+            compress_btn.click(compress_for_web, [compress_input, compress_quality, compress_format], [compress_output, compress_info])
     return demo
 
 
