@@ -6,8 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     CUDA_VISIBLE_DEVICES="" \
     OMP_NUM_THREADS=4 \
-    MKL_NUM_THREADS=4 \
-    GEMINI_IMAGE_MODEL="gemini-3.1-flash-image"
+    MKL_NUM_THREADS=4
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libgl1 libgomp1 libsm6 libxext6 libxrender1 \
@@ -20,7 +19,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
 
 COPY app.py .
 COPY gemini_app.py .
-COPY gemini_engine.py .
+COPY ai_provider_engine.py .
 COPY core ./core
 RUN mkdir -p /app/models /app/data/output
 
