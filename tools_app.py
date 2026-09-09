@@ -289,7 +289,11 @@ def remove_demo():
             source.change(base.reset_editor, source, [editor, mask_data])
             auto_btn.click(base.auto_detect, source, [preview, editor, status, mask_data], show_progress="minimal")
             clear_btn.click(base.reset_editor, source, [editor, mask_data])
-            demo.load(base.refresh_status, [local_status, local_desc, gemini_status, gemini_desc, openai_status, openai_desc])
+            demo.load(
+                base.refresh_status,
+                inputs=[],
+                outputs=[local_status, local_desc, gemini_status, gemini_desc, openai_status, openai_desc],
+            )
             local_btn.click(lambda: ("local", "**当前引擎：本地 LaMa（免费）**"), outputs=[selected, selected_text])
             gemini_btn.click(lambda: ("gemini", "**当前引擎：Gemini（1 积分）**"), outputs=[selected, selected_text])
             openai_btn.click(lambda: ("openai", "**当前引擎：OpenAI（3 积分）**"), outputs=[selected, selected_text])
