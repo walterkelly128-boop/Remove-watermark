@@ -8,8 +8,11 @@ services:
       CUDA_VISIBLE_DEVICES: ""
       OMP_NUM_THREADS: "4"
       MKL_NUM_THREADS: "4"
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
-      GEMINI_IMAGE_MODEL: ${GEMINI_IMAGE_MODEL:-gemini-3.1-flash-image}
+      RC_API_KEY: ${RC_API_KEY}
+      RC_API_BASE_URL: ${RC_API_BASE_URL:-https://api.rcouyi.com/v1}
+      RC_GEMINI_MODEL: ${RC_GEMINI_MODEL}
+      RC_OPENAI_MODEL: ${RC_OPENAI_MODEL}
+      RC_API_TIMEOUT: ${RC_API_TIMEOUT:-180}
     volumes:
       - ./models:/app/models
       - ./data:/app/data
