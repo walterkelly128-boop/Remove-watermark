@@ -1,111 +1,104 @@
-# Remove Watermark - Gemini AI Docker Edition
+# ZOLFOX Tools V1
 
-用于处理你拥有或获得授权可以修改的图片。当前版本默认使用 **Gemini 3.1 Flash Image（Nano Banana 2）** 做局部 AI 图像重建，并保留自动候选检测 + 手动 Mask 编辑流程。
+`tools.zolfox.com` 第一版在线工具箱，当前先提供两个工具：
 
-Google 官方文档显示，Gemini 3.1 Flash Image 支持图片输入、图片编辑以及对指定区域进行语义修改；它面向低延迟和高吞吐场景。citeturn0search0turn1search0
+- 🪄 图片去水印：本地 LaMa CPU、Gemini、OpenAI，多种修复方式
+- 📦 图片压缩：JPG / PNG / WebP，支持质量调整和输出格式选择
 
-## 核心流程
+同时保留统一账号、游客体验额度、用户额度、手动充值和管理员后台，后续可以继续在同一个项目中增加 PDF、图片转换、尺寸调整等工具。
+
+## 架构
 
 ```text
-上传图片
+浏览器
   ↓
-自动识别候选水印区域
+tools.zolfox.com
   ↓
-红色 Mask 预览
+宝塔 Nginx / HTTPS
   ↓
-画笔增加 / 橡皮擦删除
+127.0.0.1:7860
   ↓
-局部裁剪 + Mask 扩张
-  ↓
-Gemini 3.1 Flash Image
-  ↓
-只替换 Mask 区域并贴回原图
+ZOLFOX Tools Docker
+  ├── 图片去水印
+  ├── 图片压缩
+  ├── 账号 / 额度
+  ├── 手动充值
+  └── 管理后台
 ```
 
-### 为什么这一版不同
-
-以前的版本主要依赖 LaMa/传统 inpainting。新版增加 Gemini 图像编辑作为主要修复引擎：程序不会直接把整张图交给 Gemini，而是根据 Mask 截取水印附近的局部区域，并同时发送原图和红色 Mask 参考图，要求模型只重建被标记区域。
-
-这对明显的文字/Logo 覆盖、复杂背景和纹理区域通常比单纯模糊或简单 OpenCV 修复更合适。但生成式修复不是像素级无损恢复，人物脸部、文字和复杂物体仍可能发生细微变化。
-
-## Quick start
+## 本地 Docker 测试
 
 ```bash
 git clone https://github.com/walterkelly128-boop/Remove-watermark.git
 cd Remove-watermark
+cp .env.example .env
 ```
 
-设置 Gemini API Key：
+编辑 `.env`，至少设置：
 
-### Windows PowerShell
-
-```powershell
-$env:GEMINI_API_KEY="你的 Gemini API Key"
-docker compose up --build
+```env
+RC_API_KEY=你的RCouyi_API_KEY
+RC_GEMINI_MODEL=你的Gemini图像模型
+RC_OPENAI_MODEL=你的OpenAI图像模型
+ADMIN_PASSWORD=一个强密码
+GUEST_IP_SALT=一个长期稳定的随机密钥
 ```
 
-### Linux / macOS
+然后：
 
 ```bash
-export GEMINI_API_KEY="你的 Gemini API Key"
-docker compose up --build
+docker compose build --no-cache
+docker compose up -d
 ```
 
-打开：
+浏览器访问：
 
 ```text
-http://localhost:7860
+http://127.0.0.1:7860
 ```
 
-## Docker Compose
+## 宝塔部署
 
-如果 compose 文件支持环境变量，建议写成：
-
-```yaml
-services:
-  remove-watermark:
-    build: .
-    ports:
-      - "7860:7860"
-    environment:
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
-      GEMINI_IMAGE_MODEL: gemini-3.1-flash-image
-```
-
-不要把真实 API Key 提交到 GitHub。
-
-## 可选模型
-
-默认：
+项目目录例如：
 
 ```text
-gemini-3.1-flash-image
+/www/wwwroot/tools.zolfox.com
 ```
 
-也可以通过：
+进入目录：
 
-```text
-GEMINI_IMAGE_MODEL
+```bash
+cd /www/wwwroot/tools.zolfox.com
+git pull
+docker compose build
+docker compose up -d
 ```
 
-切换到你的 Gemini 图像模型版本。Google 当前文档将 Gemini 3.1 Flash Image 定位为速度、质量和成本之间的平衡型图像生成/编辑模型。citeturn0search7
+Compose 只绑定 `127.0.0.1:7860`，公网访问通过宝塔 Nginx 反向代理到 `127.0.0.1:7860`，再使用宝塔申请 SSL。
 
-## 使用步骤
+## 数据和磁盘
 
-1. 上传图片。
-2. 点击 **自动识别候选区域**。
-3. 查看红色 Mask。
-4. 用画笔补充遗漏区域。
-5. 用橡皮擦删除误识别区域。
-6. 点击 **Gemini AI 智能修复**。
-7. 查看修复结果。
+- `./data`：SQLite 账号、额度、充值和审计数据
+- `./models`：本地 LaMa 模型
+- 上传图片不写入业务数据库
+- 压缩结果使用临时文件
+- Docker 使用 CPU，不安装 CUDA
 
-自动检测只是候选区域生成器，并不保证能识别所有水印。最终 Mask 应由用户确认。
+5GB 磁盘环境建议定期检查 Docker 镜像、构建缓存和日志，避免长期积累占满磁盘。
 
-## API Key 安全
+## 安全
 
-API Key 只在 Docker 后端读取 `GEMINI_API_KEY`，浏览器前端不会显示 Key。不要把 `.env`、API Key 或任何 Secret 提交到 GitHub。
+不要把 `.env` 或真实 API Key 提交到 GitHub。
+
+生产环境建议：
+
+- 使用 HTTPS
+- 设置强 `ADMIN_PASSWORD`
+- 设置稳定的 `GUEST_IP_SALT`
+- 配置管理员 TOTP 2FA
+- 仅让可信反向代理使用 `TRUST_PROXY=1`
+- 定期备份 `./data/accounts.db`
 
 ## 合法使用
 
-只对你拥有或明确获得授权可以修改的图片进行处理，并遵守图片来源平台的条款、版权和署名要求。
+仅处理你拥有或明确获得授权可以修改的图片，并遵守图片来源平台的版权、条款和署名要求。
