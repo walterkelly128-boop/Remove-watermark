@@ -29,13 +29,15 @@ def _user_agent(request):
 def auth_login(username,password,totp_code,request: gr.Request=None):
  u,m=accounts.login(username,password,_client_ip(request),_user_agent(request),totp_code)
  if u:
-  return (u["id"],u["session_token"],u["csrf_token"],gr.update(visible=False),gr.update(visible=True),f"✅ 欢迎回来，**{u['username']}**",account_text(u),gr.update(visible=bool(u['is_admin'])))
- return (None,None,None,gr.update(visible=True),gr.update(visible=False),f"❌ {m}","",gr.update(visible=False))
+  return (u["id"],u["session_token"],u["csrf_token"],gr.update(visible=False),gr.update(visible=True),gr.update(visible=True),f"✅ 欢迎回来，**{u['username']}**",account_text(u),gr.update(visible=bool(u['is_admin'])))
+ return (None,None,None,gr.update(visible=True),gr.update(visible=True),gr.update(visible=False),f"❌ {m}","",gr.update(visible=False))
 def auth_register(username,password):
  ok,m=accounts.register(username,password); return f"{'✅' if ok else '❌'} {m}",gr.update(value=username if ok else None)
 def logout(token):
  accounts.revoke_session(token)
- return None,None,None,gr.update(visible=True),gr.update(visible=False),"","",gr.update(visible=False)
+ # Logging out must never hide the public tools. Guests keep access to the
+ # watermark tool and compression tool; only account state is cleared.
+ return None,None,None,gr.update(visible=True),gr.update(visible=True),gr.update(visible=False),"","",gr.update(visible=False)
 def require_user(uid,token,csrf=None,admin=False):
  if not uid or not token:return None,"请先登录。"
  s,m=accounts.validate_session(token,csrf,admin)
@@ -172,7 +174,7 @@ with gr.Blocks(title="AI 图片智能修复",theme=gr.themes.Soft(),css=CSS+CARD
  with gr.Column(visible=True) as app_panel:
   with gr.Row():
    with gr.Column(scale=5): gr.Markdown("# AI 图片智能修复\n自动识别候选区域 + 手动画笔/橡皮擦 Mask。支持本地 CPU LaMa、Gemini 和 OpenAI。")
-   with gr.Column(scale=2): account_info=gr.Markdown(); logout_btn=gr.Button("退出登录")
+   with gr.Column(scale=2): account_info=gr.Markdown(); logout_btn=gr.Button("退出登录", visible=False)
   with gr.Accordion("🔐 账户安全",open=False):
    with gr.Row(): old_pass=gr.Textbox(label="当前密码",type="password"); new_pass=gr.Textbox(label="新密码（至少8位）",type="password"); change_pass_btn=gr.Button("修改密码")
    password_message=gr.Markdown()
@@ -216,7 +218,7 @@ with gr.Blocks(title="AI 图片智能修复",theme=gr.themes.Soft(),css=CSS+CARD
     with gr.Row(): set_amount=gr.Number(label="设置为",precision=0); set_btn=gr.Button("设置额度"); disable_btn=gr.Button("禁用用户"); enable_btn=gr.Button("启用用户")
     admin_message=gr.Markdown(); gr.Markdown("## 📋 使用记录"); admin_usage_btn=gr.Button("查看全部记录"); logs_table=gr.Dataframe(headers=["ID","用户","引擎","额度","状态","详情","时间"],interactive=False)
     gr.Markdown("## 🔐 管理员操作审计"); admin_audit_btn=gr.Button("查看审计记录"); audit_table=gr.Dataframe(headers=["ID","管理员","操作","目标用户","详情","时间"],interactive=False)
- login_btn.click(auth_login,[login_user,login_pass,login_totp],[user_id,session_token,csrf_token,auth_panel,app_panel,auth_message,account_info,admin_tab]); reg_btn.click(auth_register,[reg_user,reg_pass],[auth_message,login_user]); logout_btn.click(logout,[session_token],[user_id,session_token,csrf_token,auth_panel,app_panel,auth_message,account_info,admin_tab]); change_pass_btn.click(change_my_password,[user_id,session_token,csrf_token,old_pass,new_pass],password_message)
+ login_btn.click(auth_login,[login_user,login_pass,login_totp],[user_id,session_token,csrf_token,auth_panel,app_panel,logout_btn,auth_message,account_info,admin_tab]); reg_btn.click(auth_register,[reg_user,reg_pass],[auth_message,login_user]); logout_btn.click(logout,[session_token],[user_id,session_token,csrf_token,auth_panel,app_panel,auth_message,account_info,admin_tab]); change_pass_btn.click(change_my_password,[user_id,session_token,csrf_token,old_pass,new_pass],password_message)
  source.change(reset_editor,source,[editor,mask_data]); auto_btn.click(auto_detect,source,[preview,editor,status,mask_data],show_progress="minimal"); clear_btn.click(reset_editor,source,[editor,mask_data]); demo.load(refresh_status,[local_status,local_desc,gemini_status,gemini_desc,openai_status,openai_desc])
  local_btn.click(lambda:("local","**当前引擎：本地 LaMa（免费）**"),outputs=[selected,selected_text]); gemini_btn.click(lambda:("gemini","**当前引擎：Gemini（1 次额度）**"),outputs=[selected,selected_text]); openai_btn.click(lambda:("openai","**当前引擎：OpenAI（2 次额度）**"),outputs=[selected,selected_text]); restore_btn.click(ai_restore,[selected,source,mask_data,user_id,session_token,csrf_token],result)
  recharge_submit_btn.click(recharge_submit,[user_id,session_token,csrf_token,recharge_choice,recharge_note],[recharge_message,recharge_table]); recharge_refresh_btn.click(recharge_history_view,[user_id,session_token,csrf_token],recharge_table)
