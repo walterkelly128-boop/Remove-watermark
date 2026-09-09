@@ -13,6 +13,10 @@ services:
       RC_GEMINI_MODEL: ${RC_GEMINI_MODEL}
       RC_OPENAI_MODEL: ${RC_OPENAI_MODEL}
       RC_API_TIMEOUT: ${RC_API_TIMEOUT:-180}
+      FREE_CREDITS: ${FREE_CREDITS:-5}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
+      ACCOUNT_DB_PATH: /app/data/accounts.db
     volumes:
       - ./models:/app/models
       - ./data:/app/data
