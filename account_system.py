@@ -2,7 +2,7 @@ from __future__ import annotations
 import hashlib, hmac, os, secrets, sqlite3
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-DB_PATH=Path(os.getenv("ACCOUNT_DB_PATH","/app/data/accounts.db")); FREE_CREDITS=int(os.getenv("FREE_CREDITS","5")); ADMIN_USERNAME=os.getenv("ADMIN_USERNAME","admin"); ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD","")
+DB_PATH=Path(os.getenv("ACCOUNT_DB_PATH","/app/data/accounts.db")); FREE_CREDITS=int(os.getenv("FREE_CREDITS","5")); GUEST_CREDITS=int(os.getenv("GUEST_CREDITS","5")); ADMIN_USERNAME=os.getenv("ADMIN_USERNAME","admin"); ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD",""); GUEST_IP_SALT=os.getenv("GUEST_IP_SALT","") or secrets.token_hex(32)
 PBKDF2_ROUNDS=600000; LOGIN_MAX_FAILURES=5; LOGIN_LOCK_MINUTES=15
 
 def _now(): return datetime.now(timezone.utc).isoformat()
@@ -14,13 +14,14 @@ def _verify_password(password,stored):
  try:
   _,rounds,salt,digest=stored.split("$",3); test=hashlib.pbkdf2_hmac("sha256",password.encode("utf-8"),bytes.fromhex(salt),int(rounds)); return hmac.compare_digest(test.hex(),digest)
  except Exception:return False
+def _guest_key(ip): return hmac.new(GUEST_IP_SALT.encode("utf-8"),ip.encode("utf-8"),hashlib.sha256).hexdigest()
 def _migrate_columns(db):
  cols={r[1] for r in db.execute("PRAGMA table_info(users)").fetchall()}
  for name,definition in (("disabled","INTEGER NOT NULL DEFAULT 0"),("is_admin","INTEGER NOT NULL DEFAULT 0"),("failed_logins","INTEGER NOT NULL DEFAULT 0"),("locked_until","TEXT")):
   if name not in cols: db.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
 def init_db():
  with _connect() as db:
-  db.executescript('''CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,credits INTEGER NOT NULL DEFAULT 0,disabled INTEGER NOT NULL DEFAULT 0,is_admin INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,last_login TEXT,failed_logins INTEGER NOT NULL DEFAULT 0,locked_until TEXT); CREATE TABLE IF NOT EXISTS usage_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT NOT NULL,provider TEXT NOT NULL,credits INTEGER NOT NULL,success INTEGER NOT NULL,detail TEXT,created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id)); CREATE TABLE IF NOT EXISTS admin_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,admin_user_id INTEGER NOT NULL,admin_username TEXT NOT NULL,action TEXT NOT NULL,target_user_id INTEGER,target_username TEXT,detail TEXT,created_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS idx_users_username ON users(username); CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_logs(user_id,created_at DESC); CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit(created_at DESC);''')
+  db.executescript('''CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,credits INTEGER NOT NULL DEFAULT 0,disabled INTEGER NOT NULL DEFAULT 0,is_admin INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,last_login TEXT,failed_logins INTEGER NOT NULL DEFAULT 0,locked_until TEXT); CREATE TABLE IF NOT EXISTS usage_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT NOT NULL,provider TEXT NOT NULL,credits INTEGER NOT NULL,success INTEGER NOT NULL,detail TEXT,created_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id)); CREATE TABLE IF NOT EXISTS admin_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,admin_user_id INTEGER NOT NULL,admin_username TEXT NOT NULL,action TEXT NOT NULL,target_user_id INTEGER,target_username TEXT,detail TEXT,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS guest_usage(id INTEGER PRIMARY KEY AUTOINCREMENT,guest_key TEXT UNIQUE NOT NULL,credits INTEGER NOT NULL,created_at TEXT NOT NULL,last_used_at TEXT NOT NULL,total_used INTEGER NOT NULL DEFAULT 0); CREATE INDEX IF NOT EXISTS idx_users_username ON users(username); CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_logs(user_id,created_at DESC); CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit(created_at DESC); CREATE INDEX IF NOT EXISTS idx_guest_last_used ON guest_usage(last_used_at DESC);''')
   _migrate_columns(db)
   if ADMIN_PASSWORD and not db.execute("SELECT id FROM users WHERE username=?",(ADMIN_USERNAME,)).fetchone(): db.execute("INSERT INTO users(username,password_hash,is_admin,created_at) VALUES(?,?,1,?)",(ADMIN_USERNAME,_hash_password(ADMIN_PASSWORD)))
 def register(username,password):
@@ -67,8 +68,30 @@ def consume_credit(user_id,provider,cost=1):
   if not r:return False,"账户不存在。"
   if r['disabled']:return False,"账号已被禁用。"
   if r['is_admin']:return True,"管理员账户不扣额度。"
-  if r['credits']<cost:return False,"额度不足，请联系管理员。"
+  if r['credits']<cost:return False,"额度不足，请充值后继续使用。"
   db.execute("UPDATE users SET credits=credits-? WHERE id=?",(cost,user_id)); return True,"额度已预扣。"
+def consume_guest(ip,provider,cost=1):
+ if not ip:return False,"无法识别访客网络地址，请登录后继续。"
+ if cost<=0:return True,"免费操作。"
+ key=_guest_key(ip); now=_now()
+ with _connect() as db:
+  db.execute("BEGIN IMMEDIATE")
+  row=db.execute("SELECT * FROM guest_usage WHERE guest_key=?",(key,)).fetchone()
+  if not row:
+   remaining=GUEST_CREDITS-cost
+   if remaining<0:return False,f"游客免费额度为 {GUEST_CREDITS} 次，请注册或登录后继续。"
+   db.execute("INSERT INTO guest_usage(guest_key,credits,created_at,last_used_at,total_used) VALUES(?,?,?,?,?)",(key,remaining,now,now,cost)); return True,"游客额度已预扣。"
+  if row['credits']<cost:return False,f"游客免费额度已用完（{GUEST_CREDITS} 次），请注册或登录后充值继续。"
+  db.execute("UPDATE guest_usage SET credits=credits-?,last_used_at=?,total_used=total_used+? WHERE guest_key=?",(cost,now,cost,key)); return True,"游客额度已预扣。"
+def refund_guest(ip,cost=1):
+ if ip and cost>0:
+  with _connect() as db: db.execute("UPDATE guest_usage SET credits=MIN(?,credits+?) WHERE guest_key=?",(GUEST_CREDITS,cost,_guest_key(ip)))
+def guest_remaining(ip):
+ if not ip:return GUEST_CREDITS
+ with _connect() as db:
+  r=db.execute("SELECT credits FROM guest_usage WHERE guest_key=?",(_guest_key(ip),)).fetchone(); return int(r['credits']) if r else GUEST_CREDITS
+def guest_stats():
+ with _connect() as db:return {'guests':db.execute("SELECT COUNT(*) FROM guest_usage").fetchone()[0],'guest_used':db.execute("SELECT COALESCE(SUM(total_used),0) FROM guest_usage").fetchone()[0]}
 def refund_credit(user_id,provider,cost=1):
  with _connect() as db: db.execute("UPDATE users SET credits=credits+? WHERE id=?",(cost,user_id))
 def log_usage(user_id,provider,cost,success,detail=''):
@@ -98,5 +121,5 @@ def set_disabled(user_id,disabled):
  with _connect() as db: db.execute("UPDATE users SET disabled=? WHERE id=? AND is_admin=0",(int(bool(disabled)),user_id))
 def stats():
  with _connect() as db:
-  return {'users':db.execute("SELECT COUNT(*) FROM users WHERE is_admin=0").fetchone()[0],'active':db.execute("SELECT COUNT(*) FROM users WHERE is_admin=0 AND disabled=0").fetchone()[0],'credits':db.execute("SELECT COALESCE(SUM(credits),0) FROM users WHERE is_admin=0").fetchone()[0],'total_usage':db.execute("SELECT COUNT(*) FROM usage_logs").fetchone()[0],'success':db.execute("SELECT COUNT(*) FROM usage_logs WHERE success=1").fetchone()[0],'gemini':db.execute("SELECT COALESCE(SUM(credits),0) FROM usage_logs WHERE provider='gemini' AND success=1").fetchone()[0],'openai':db.execute("SELECT COALESCE(SUM(credits),0) FROM usage_logs WHERE provider='openai' AND success=1").fetchone()[0],'local':db.execute("SELECT COUNT(*) FROM usage_logs WHERE provider='local' AND success=1").fetchone()[0]}
+  return {'users':db.execute("SELECT COUNT(*) FROM users WHERE is_admin=0").fetchone()[0],'active':db.execute("SELECT COUNT(*) FROM users WHERE is_admin=0 AND disabled=0").fetchone()[0],'credits':db.execute("SELECT COALESCE(SUM(credits),0) FROM users WHERE is_admin=0").fetchone()[0],'total_usage':db.execute("SELECT COUNT(*) FROM usage_logs").fetchone()[0],'success':db.execute("SELECT COUNT(*) FROM usage_logs WHERE success=1").fetchone()[0],'gemini':db.execute("SELECT COALESCE(SUM(credits),0) FROM usage_logs WHERE provider='gemini' AND success=1").fetchone()[0],'openai':db.execute("SELECT COALESCE(SUM(credits),0) FROM usage_logs WHERE provider='openai' AND success=1").fetchone()[0],'local':db.execute("SELECT COUNT(*) FROM usage_logs WHERE provider='local' AND success=1").fetchone()[0],**guest_stats()}
 init_db()
