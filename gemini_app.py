@@ -162,14 +162,14 @@ CARD_CSS=""".engine-card{border:1px solid var(--border-color-primary);border-rad
 with gr.Blocks(title="AI 图片智能修复",theme=gr.themes.Soft(),css=CSS+CARD_CSS,head=EDITOR_JS) as demo:
  user_id=gr.State(None); session_token=gr.State(None); csrf_token=gr.State(None)
  with gr.Column(visible=True) as auth_panel:
-  gr.Markdown("# 🔐 AI 图片智能修复\n未登录可免费体验 5 次 AI 修复；注册/登录后可通过手动充值获得更多额度。")
+  gr.Markdown("## 🔐 登录 / 注册（可选）\n游客可直接体验图片去水印；登录后可查看额度、充值和使用记录。")
   with gr.Tabs():
    with gr.Tab("登录"):
     login_user=gr.Textbox(label="用户名"); login_pass=gr.Textbox(label="密码",type="password"); login_totp=gr.Textbox(label="管理员二次验证码（6位，可选）",type="password"); login_btn=gr.Button("登录",variant="primary")
    with gr.Tab("注册"):
     reg_user=gr.Textbox(label="用户名（3-32位）"); reg_pass=gr.Textbox(label="密码（至少8位）",type="password"); reg_btn=gr.Button("注册",variant="primary")
   auth_message=gr.Markdown()
- with gr.Column(visible=False) as app_panel:
+ with gr.Column(visible=True) as app_panel:
   with gr.Row():
    with gr.Column(scale=5): gr.Markdown("# AI 图片智能修复\n自动识别候选区域 + 手动画笔/橡皮擦 Mask。支持本地 CPU LaMa、Gemini 和 OpenAI。")
    with gr.Column(scale=2): account_info=gr.Markdown(); logout_btn=gr.Button("退出登录")
