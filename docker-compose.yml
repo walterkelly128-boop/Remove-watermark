@@ -1,7 +1,7 @@
 services:
-  remove-watermark:
+  zolfox-tools:
     build: .
-    container_name: remove-watermark
+    container_name: zolfox-tools
     ports:
       - "7860:7860"
     environment:
@@ -16,7 +16,7 @@ services:
       FREE_CREDITS: ${FREE_CREDITS:-5}
       GUEST_CREDITS: ${GUEST_CREDITS:-5}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       ACCOUNT_DB_PATH: /app/data/accounts.db
       GUEST_IP_SALT: ${GUEST_IP_SALT}
       SESSION_TTL_MINUTES: ${SESSION_TTL_MINUTES:-720}
@@ -25,7 +25,7 @@ services:
       ADMIN_TOTP_SECRET: ${ADMIN_TOTP_SECRET:-}
       ADMIN_TOTP_REQUIRED: ${ADMIN_TOTP_REQUIRED:-0}
       RECHARGE_PACKAGES: ${RECHARGE_PACKAGES:-10:5,50:20,100:35}
-      RECHARGE_PAYMENT_INSTRUCTIONS: ${RECHARGE_PAYMENT_INSTRUCTIONS:-manual recharge}
+      RECHARGE_PAYMENT_INSTRUCTIONS: ${RECHARGE_PAYMENT_INSTRUCTIONS:-请先提交充值申请，管理员确认收款后会手动审核并增加额度。}
     volumes:
       - ./models:/app/models
       - ./data:/app/data
