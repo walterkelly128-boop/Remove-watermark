@@ -74,14 +74,14 @@ class RCImageEngine:
     @staticmethod
     def _prompt() -> str:
         return (
+            "Generate exactly one edited image from the provided source image. "
             "Perform precise image restoration on an image the user is authorized to edit. "
-            "The first image is the source. The second image is a red mask reference; red pixels "
-            "identify the ONLY area that must be reconstructed. Remove the watermark, text, logo "
-            "or overlay inside that region by naturally reconstructing the content behind it. "
-            "Change only the masked area. Preserve identity, faces, hair, objects, geometry, "
-            "perspective, lighting, shadows, colors, texture, sharpness and composition outside "
-            "the mask. Do not blur the repaired area. Do not add objects, text or logos. Return "
-            "the restored image only."
+            "The transparent area of the mask identifies the ONLY area that must be reconstructed. "
+            "Remove the watermark, text, logo or overlay inside that masked region by naturally "
+            "reconstructing the content behind it. Change only the masked area. Preserve identity, "
+            "faces, hair, objects, geometry, perspective, lighting, shadows, colors, texture, "
+            "sharpness and composition outside the mask. Do not blur the repaired area. "
+            "Do not add objects, text or logos. Return the restored image only."
         )
 
     @staticmethod
@@ -120,6 +120,8 @@ class RCImageEngine:
         return None
 
     def _openai_image_edit(self, image: Image.Image, mask: np.ndarray) -> Image.Image:
+        # RCouyi documents /images/edits as multipart/form-data for gpt-image-1.
+        # The mask must be RGBA with transparent pixels marking the region to edit.
         alpha = np.full(mask.shape, 255, dtype=np.uint8)
         alpha[np.asarray(mask) > 30] = 0
         rgba_mask = Image.new("RGBA", image.size, (255, 255, 255, 255))
@@ -129,11 +131,20 @@ class RCImageEngine:
             "image": ("image.png", self._png_bytes(image.convert("RGBA")), "image/png"),
             "mask": ("mask.png", self._png_bytes(rgba_mask), "image/png"),
         }
+        data = {
+            "model": self.model,
+            "prompt": self._prompt(),
+            "n": "1",
+            "response_format": "b64_json",
+        }
+        # Avoid the unsupported/ambiguous size="auto" value on the proxy.
+        # The service accepts an optional size; omitting it lets the upstream
+        # image editor choose a valid output size for the cropped input.
         response = requests.post(
             f"{self.base_url}/images/edits",
             headers={"Authorization": f"Bearer {self.api_key}"},
             files=files,
-            data={"model": self.model, "prompt": self._prompt(), "size": "auto"},
+            data=data,
             timeout=self.timeout,
         )
         self._raise_for_status(response)
