@@ -20,8 +20,10 @@ RUN python -m pip install --upgrade pip setuptools wheel \
 COPY app.py .
 COPY gemini_app.py .
 COPY ai_provider_engine.py .
+COPY account_system.py .
+COPY recharge_system.py .
 COPY core ./core
-RUN mkdir -p /app/models /app/data/output
+RUN mkdir -p /app/models /app/data /app/data/output
 
 EXPOSE 7860
 CMD ["python", "gemini_app.py"]
