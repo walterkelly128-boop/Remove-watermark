@@ -13,7 +13,13 @@ PBKDF2_ROUNDS=600000; LOGIN_MAX_FAILURES=5; LOGIN_LOCK_MINUTES=15
 
 def _now(): return datetime.now(timezone.utc).isoformat()
 def _connect():
- DB_PATH.parent.mkdir(parents=True,exist_ok=True); c=sqlite3.connect(DB_PATH,timeout=30); c.row_factory=sqlite3.Row; return c
+ DB_PATH.parent.mkdir(parents=True,exist_ok=True)
+ c=sqlite3.connect(DB_PATH,timeout=30)
+ c.row_factory=sqlite3.Row
+ c.execute("PRAGMA busy_timeout=30000")
+ c.execute("PRAGMA journal_mode=WAL")
+ c.execute("PRAGMA synchronous=NORMAL")
+ return c
 def _hash_password(password):
  salt=secrets.token_bytes(16); digest=hashlib.pbkdf2_hmac("sha256",password.encode("utf-8"),salt,PBKDF2_ROUNDS); return f"pbkdf2${PBKDF2_ROUNDS}${salt.hex()}${digest.hex()}"
 def _verify_password(password,stored):
@@ -79,6 +85,7 @@ def register(username,password):
  except sqlite3.IntegrityError:return False,"用户名已存在。"
 def login(username,password,ip="",user_agent="",totp_code=""):
  username=(username or '').strip()
+ user=None
  with _connect() as db:
   row=db.execute("SELECT * FROM users WHERE username=?",(username,)).fetchone()
   if not row:return None,"用户名或密码错误。"
@@ -96,8 +103,12 @@ def login(username,password,ip="",user_agent="",totp_code=""):
     until=(datetime.now(timezone.utc)+timedelta(minutes=LOGIN_LOCK_MINUTES)).isoformat(); db.execute("UPDATE users SET failed_logins=?,locked_until=? WHERE id=?",(failures,until,row['id']))
     return None,"登录失败次数过多，账号已临时锁定 15 分钟。"
    db.execute("UPDATE users SET failed_logins=? WHERE id=?",(failures,row['id'])); return None,"用户名或密码错误。"
-  db.execute("UPDATE users SET last_login=?,failed_logins=0,locked_until=NULL WHERE id=?",(_now(),row['id'])); row=dict(row); row['failed_logins']=0; row['locked_until']=None
-  token,csrf=create_session(row['id'],ip,user_agent,bool(row['is_admin'])); row['session_token']=token; row['csrf_token']=csrf; return row,"登录成功。"
+  db.execute("UPDATE users SET last_login=?,failed_logins=0,locked_until=NULL WHERE id=?",(_now(),row['id']))
+  user=dict(row); user['failed_logins']=0; user['locked_until']=None
+
+ token,csrf=create_session(user['id'],ip,user_agent,bool(user['is_admin']))
+ user['session_token']=token; user['csrf_token']=csrf
+ return user,"登录成功。"
 def get_user(user_id):
  with _connect() as db:
   r=db.execute("SELECT * FROM users WHERE id=?",(user_id,)).fetchone(); return dict(r) if r else None
