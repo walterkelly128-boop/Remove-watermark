@@ -33,6 +33,8 @@ def _migrate_columns(db):
  cols={r[1] for r in db.execute("PRAGMA table_info(users)").fetchall()}
  for name,definition in (("disabled","INTEGER NOT NULL DEFAULT 0"),("is_admin","INTEGER NOT NULL DEFAULT 0"),("failed_logins","INTEGER NOT NULL DEFAULT 0"),("locked_until","TEXT")):
   if name not in cols: db.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
+ guest_cols={r[1] for r in db.execute("PRAGMA table_info(guest_usage)").fetchall()}
+ if "ip" not in guest_cols: db.execute("ALTER TABLE guest_usage ADD COLUMN ip TEXT NOT NULL DEFAULT ''")
 def _totp(secret,step=None):
  try:
   raw=base64.b32decode(secret + "="*((8-len(secret)%8)%8),casefold=True); counter=int(time.time()//30) if step is None else int(step)
@@ -88,10 +90,10 @@ def register(username,password,ip=""):
     if guest:
      initial=max(0,int(guest['credits']))
     else:
-     now=_now(); db.execute("INSERT INTO guest_usage(guest_key,credits,created_at,last_used_at,total_used) VALUES(?,?,?,?,0)",(key,GUEST_CREDITS,now,now)); initial=GUEST_CREDITS
+     now=_now(); db.execute("INSERT INTO guest_usage(guest_key,ip,credits,created_at,last_used_at,total_used) VALUES(?,?,?,?,?,0)",(key,ip,GUEST_CREDITS,now,now)); initial=GUEST_CREDITS
    db.execute("INSERT INTO users(username,password_hash,credits,created_at) VALUES(?,?,?,?)",(username,_hash_password(password),initial,_now()))
    if ip:
-    db.execute("UPDATE guest_usage SET credits=0,last_used_at=? WHERE guest_key=?",(_now(),_guest_key(ip)))
+    db.execute("UPDATE guest_usage SET ip=?,credits=0,last_used_at=? WHERE guest_key=?",(ip,_now(),_guest_key(ip)))
   return True,f"注册成功，已赠送 {initial} 积分。"
  except sqlite3.IntegrityError:return False,"用户名已存在。"
 def login(username,password,ip="",user_agent="",totp_code=""):
@@ -155,9 +157,9 @@ def consume_guest(ip,provider,cost=1):
   if not row:
    remaining=GUEST_CREDITS-cost
    if remaining<0:return False,f"游客免费积分为 {GUEST_CREDITS} 积分，请注册或登录后继续。"
-   db.execute("INSERT INTO guest_usage(guest_key,credits,created_at,last_used_at,total_used) VALUES(?,?,?,?,?)",(key,remaining,now,now,cost)); return True,"游客积分已预扣。"
+   db.execute("INSERT INTO guest_usage(guest_key,ip,credits,created_at,last_used_at,total_used) VALUES(?,?,?,?,?,?)",(key,ip,remaining,now,now,cost)); return True,"游客积分已预扣。"
   if row['credits']<cost:return False,f"游客免费积分已用完（{GUEST_CREDITS} 积分），请注册或登录后充值继续。"
-  db.execute("UPDATE guest_usage SET credits=credits-?,last_used_at=?,total_used=total_used+? WHERE guest_key=?",(cost,now,cost,key)); return True,"游客积分已预扣。"
+  db.execute("UPDATE guest_usage SET ip=?,credits=credits-?,last_used_at=?,total_used=total_used+? WHERE guest_key=?",(ip,cost,now,cost,key)); return True,"游客积分已预扣。"
 def refund_guest(ip,cost=1):
  if ip and cost>0:
   with _connect() as db: db.execute("UPDATE guest_usage SET credits=MIN(?,credits+?) WHERE guest_key=?",(GUEST_CREDITS,cost,_guest_key(ip)))
@@ -167,6 +169,9 @@ def guest_remaining(ip):
   r=db.execute("SELECT credits FROM guest_usage WHERE guest_key=?",(_guest_key(ip),)).fetchone(); return int(r['credits']) if r else GUEST_CREDITS
 def guest_stats():
  with _connect() as db:return {'guests':db.execute("SELECT COUNT(*) FROM guest_usage").fetchone()[0],'guest_used':db.execute("SELECT COALESCE(SUM(total_used),0) FROM guest_usage").fetchone()[0]}
+
+def admin_guest_records(limit=500):
+ with _connect() as db:return [dict(r) for r in db.execute("SELECT id,ip,credits,total_used,created_at,last_used_at FROM guest_usage ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]
 def refund_credit(user_id,provider,cost=1):
  if provider=="openai": cost=3
  elif provider=="gemini": cost=1

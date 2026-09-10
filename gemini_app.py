@@ -85,7 +85,11 @@ def ai_restore(provider,image,mask_data,user_id,session_token,csrf_token,request
 def admin_users_view(keyword=""):
  rows=accounts.admin_users(keyword); return [[r["id"],r["username"],r["credits"],"禁用" if r.get("disabled") else "正常","管理员" if r["is_admin"] else "用户",r["created_at"],r["last_login"] or "-"] for r in rows]
 def admin_logs(uid=None):
- rows=accounts.usage_for_user(int(uid)) if uid else accounts.admin_usage(); return [[r["id"],r["username"],r["provider"],r["credits"],"成功" if r["success"] else "失败",r["detail"] or "",r["created_at"]] for r in rows]
+ try:
+  rows=accounts.usage_for_user(int(uid)) if uid else accounts.admin_usage()
+  return [[r.get("id",""),r.get("username",""),r.get("provider",""),int(r.get("credits",0)),"成功" if r.get("success") else "失败",r.get("detail") or "",r.get("created_at","")] for r in rows]
+ except Exception as exc:
+  traceback.print_exc(); return [["","系统","","","错误",f"读取使用记录失败：{exc}",""]]
 def admin_audits():
  rows=accounts.admin_audit_logs(); return [[r["id"],r["admin_username"],r["action"],r["target_username"] or "-",r["detail"] or "",r["created_at"]] for r in rows]
 def admin_stats():

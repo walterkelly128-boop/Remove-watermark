@@ -46,6 +46,10 @@ def admin_refresh(uid,token,csrf): return base.admin_refresh_view(uid,token,csrf
 def search(uid,token,csrf,keyword): return base.admin_search_view(uid,token,csrf,keyword)
 def users_all(uid,token,csrf): return base.admin_search_view(uid,token,csrf,"")
 def usage(uid,token,csrf): return base.admin_usage_view(uid,token,csrf)
+def guest_ips(uid,token,csrf):
+    s,m=base._admin(uid,token,csrf)
+    if not s:return []
+    return [[r.get("id",""),r.get("ip") or "-",int(r.get("credits",0)),int(r.get("total_used",0)),r.get("created_at",""),r.get("last_used_at","")] for r in base.accounts.admin_guest_records()]
 def audits(uid,token,csrf):
     s,m=base._admin(uid,token,csrf)
     return base.admin_audits() if s else []
@@ -87,6 +91,8 @@ with gr.Blocks(title="ZOLFOX 管理后台",theme=gr.themes.Soft(),css=CSS) as ad
                     admin_note=gr.Textbox(label="管理员备注",max_lines=2); recharge_message=gr.Markdown()
                 with gr.Tab("📋 使用记录"):
                     usage_btn=gr.Button("查看全部记录"); logs_table=gr.Dataframe(headers=["ID","用户","引擎","积分","状态","详情","时间"],interactive=False)
+                    gr.Markdown("### 游客 IP / 免费积分记录")
+                    guest_ip_btn=gr.Button("查看游客 IP 记录"); guest_ip_table=gr.Dataframe(headers=["ID","IP","剩余免费积分","已使用免费积分","首次记录","最后使用"],interactive=False)
                 with gr.Tab("🔐 操作审计"):
                     audit_btn=gr.Button("查看审计记录"); audit_table=gr.Dataframe(headers=["ID","管理员","操作","目标用户","详情","时间"],interactive=False)
         refresh_btn.click(admin_refresh,[user_id,session_token,csrf_token],[admin_stat,users_table,logs_table])
@@ -100,7 +106,8 @@ with gr.Blocks(title="ZOLFOX 管理后台",theme=gr.themes.Soft(),css=CSS) as ad
         recharge_filter.change(recharge_orders,[user_id,session_token,csrf_token,recharge_filter],recharge_table)
         approve_btn.click(lambda uid,tok,csrf,oid,note: recharge_review(uid,tok,csrf,oid,True,note),[user_id,session_token,csrf_token,order_id,admin_note],[recharge_message,recharge_table])
         reject_btn.click(lambda uid,tok,csrf,oid,note: recharge_review(uid,tok,csrf,oid,False,note),[user_id,session_token,csrf_token,order_id,admin_note],[recharge_message,recharge_table])
-        usage_btn.click(usage,[user_id,session_token,csrf_token],logs_table)
+        usage_btn.click(usage,[user_id,session_token,csrf_token],logs_table,queue=False)
+        guest_ip_btn.click(guest_ips,[user_id,session_token,csrf_token],guest_ip_table,queue=False)
         audit_btn.click(audits,[user_id,session_token,csrf_token],audit_table)
         gr.on(inputs=[browser_session],outputs=[user_id,session_token,csrf_token,panel,admin_message,admin_stat,users_table,logs_table,audit_table],fn=restore)
 
