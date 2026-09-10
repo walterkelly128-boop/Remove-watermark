@@ -133,8 +133,8 @@ def restore_session(browser_session):
     except Exception:
         return (
             None, None, None,
-            gr.update(visible=False), gr.update(visible=True), gr.update(value="会员中心", visible=False), "",
-            False, "", gr.update(visible=False), False, gr.update(value=""),
+            gr.skip(), gr.skip(), gr.skip(), "",
+            False, gr.skip(), gr.skip(), gr.skip(), gr.skip(),
         )
 
 
@@ -207,6 +207,8 @@ def add_header():
         lambda: gr.update(visible=True),
         inputs=[],
         outputs=[auth_panel],
+        queue=False,
+        js=True,
     )
     member_open.click(
         toggle_member,
