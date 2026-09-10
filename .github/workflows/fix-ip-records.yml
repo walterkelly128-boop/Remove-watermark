@@ -1,5 +1,7 @@
 name: Fix IP shared credits and admin records
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 jobs:
   patch:
@@ -12,9 +14,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-
-          p=Path('account_system.py')
-          s=p.read_text(encoding='utf-8')
+          p=Path('account_system.py'); s=p.read_text(encoding='utf-8')
           old='''def _migrate_columns(db):\n cols={r[1] for r in db.execute("PRAGMA table_info(users)").fetchall()}\n for name,definition in (("disabled","INTEGER NOT NULL DEFAULT 0"),("is_admin","INTEGER NOT NULL DEFAULT 0"),("failed_logins","INTEGER NOT NULL DEFAULT 0"),("locked_until","TEXT")):\n  if name not in cols: db.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")'''
           new=old+'\n guest_cols={r[1] for r in db.execute("PRAGMA table_info(guest_usage)").fetchall()}\n if "ip" not in guest_cols: db.execute("ALTER TABLE guest_usage ADD COLUMN ip TEXT NOT NULL DEFAULT \'\'")'
           if 'if "ip" not in guest_cols' not in s: s=s.replace(old,new)
@@ -27,19 +27,16 @@ jobs:
           s=s.replace('UPDATE guest_usage SET credits=credits-?,last_used_at=?,total_used=total_used+? WHERE guest_key=?', 'UPDATE guest_usage SET ip=?,credits=credits-?,last_used_at=?,total_used=total_used+? WHERE guest_key=?')
           s=s.replace('(cost,now,cost,key)', '(ip,cost,now,cost,key)')
           marker='''def guest_stats():\n with _connect() as db:return {'guests':db.execute("SELECT COUNT(*) FROM guest_usage").fetchone()[0],'guest_used':db.execute("SELECT COALESCE(SUM(total_used),0) FROM guest_usage").fetchone()[0]}'''
-          if 'def admin_guest_records(' not in s:
-              s=s.replace(marker, marker+'\n\ndef admin_guest_records(limit=500):\n with _connect() as db:return [dict(r) for r in db.execute("SELECT id,ip,credits,total_used,created_at,last_used_at FROM guest_usage ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]')
+          if 'def admin_guest_records(' not in s:s=s.replace(marker,marker+'\n\ndef admin_guest_records(limit=500):\n with _connect() as db:return [dict(r) for r in db.execute("SELECT id,ip,credits,total_used,created_at,last_used_at FROM guest_usage ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]')
           p.write_text(s,encoding='utf-8')
 
-          p=Path('gemini_app.py')
-          s=p.read_text(encoding='utf-8')
+          p=Path('gemini_app.py'); s=p.read_text(encoding='utf-8')
           old='''def admin_logs(uid=None):\n rows=accounts.usage_for_user(int(uid)) if uid else accounts.admin_usage(); return [[r["id"],r["username"],r["provider"],r["credits"],"成功" if r["success"] else "失败",r["detail"] or "",r["created_at"]] for r in rows]'''
           new='''def admin_logs(uid=None):\n try:\n  rows=accounts.usage_for_user(int(uid)) if uid else accounts.admin_usage()\n  return [[r.get("id",""),r.get("username",""),r.get("provider",""),int(r.get("credits",0)),"成功" if r.get("success") else "失败",r.get("detail") or "",r.get("created_at","")] for r in rows]\n except Exception as exc:\n  traceback.print_exc(); return [["","系统","","","错误",f"读取使用记录失败：{exc}",""]]'''
           if old in s:s=s.replace(old,new)
           p.write_text(s,encoding='utf-8')
 
-          p=Path('admin_app.py')
-          s=p.read_text(encoding='utf-8')
+          p=Path('admin_app.py'); s=p.read_text(encoding='utf-8')
           needle='''def usage(uid,token,csrf): return base.admin_usage_view(uid,token,csrf)'''
           repl=needle+'''\ndef guest_ips(uid,token,csrf):\n    s,m=base._admin(uid,token,csrf)\n    if not s:return []\n    return [[r.get("id",""),r.get("ip") or "-",int(r.get("credits",0)),int(r.get("total_used",0)),r.get("created_at",""),r.get("last_used_at","")] for r in base.accounts.admin_guest_records()]'''
           if 'def guest_ips(' not in s:s=s.replace(needle,repl)
