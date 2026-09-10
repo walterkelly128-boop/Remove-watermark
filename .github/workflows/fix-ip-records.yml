@@ -1,0 +1,57 @@
+name: Fix IP shared credits and admin records
+on:
+  workflow_dispatch:
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p=Path('account_system.py')
+          s=p.read_text(encoding='utf-8')
+          old='''def _migrate_columns(db):\n cols={r[1] for r in db.execute("PRAGMA table_info(users)").fetchall()}\n for name,definition in (("disabled","INTEGER NOT NULL DEFAULT 0"),("is_admin","INTEGER NOT NULL DEFAULT 0"),("failed_logins","INTEGER NOT NULL DEFAULT 0"),("locked_until","TEXT")):\n  if name not in cols: db.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")'''
+          new=old+'\n guest_cols={r[1] for r in db.execute("PRAGMA table_info(guest_usage)").fetchall()}\n if "ip" not in guest_cols: db.execute("ALTER TABLE guest_usage ADD COLUMN ip TEXT NOT NULL DEFAULT \'\'")'
+          if 'if "ip" not in guest_cols' not in s: s=s.replace(old,new)
+          s=s.replace('INSERT INTO guest_usage(guest_key,credits,created_at,last_used_at,total_used) VALUES(?,?,?,?,0)', 'INSERT INTO guest_usage(guest_key,ip,credits,created_at,last_used_at,total_used) VALUES(?,?,?,?,?,0)')
+          s=s.replace('(key,GUEST_CREDITS,now,now)', '(key,ip,GUEST_CREDITS,now,now)')
+          s=s.replace('UPDATE guest_usage SET credits=0,last_used_at=? WHERE guest_key=?', 'UPDATE guest_usage SET ip=?,credits=0,last_used_at=? WHERE guest_key=?')
+          s=s.replace('(_now(),_guest_key(ip))', '(ip,_now(),_guest_key(ip))')
+          s=s.replace('INSERT INTO guest_usage(guest_key,credits,created_at,last_used_at,total_used) VALUES(?,?,?,?,?)', 'INSERT INTO guest_usage(guest_key,ip,credits,created_at,last_used_at,total_used) VALUES(?,?,?,?,?,?)')
+          s=s.replace('(key,remaining,now,now,cost)', '(key,ip,remaining,now,now,cost)')
+          s=s.replace('UPDATE guest_usage SET credits=credits-?,last_used_at=?,total_used=total_used+? WHERE guest_key=?', 'UPDATE guest_usage SET ip=?,credits=credits-?,last_used_at=?,total_used=total_used+? WHERE guest_key=?')
+          s=s.replace('(cost,now,cost,key)', '(ip,cost,now,cost,key)')
+          marker='''def guest_stats():\n with _connect() as db:return {'guests':db.execute("SELECT COUNT(*) FROM guest_usage").fetchone()[0],'guest_used':db.execute("SELECT COALESCE(SUM(total_used),0) FROM guest_usage").fetchone()[0]}'''
+          if 'def admin_guest_records(' not in s:
+              s=s.replace(marker, marker+'\n\ndef admin_guest_records(limit=500):\n with _connect() as db:return [dict(r) for r in db.execute("SELECT id,ip,credits,total_used,created_at,last_used_at FROM guest_usage ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]')
+          p.write_text(s,encoding='utf-8')
+
+          p=Path('gemini_app.py')
+          s=p.read_text(encoding='utf-8')
+          old='''def admin_logs(uid=None):\n rows=accounts.usage_for_user(int(uid)) if uid else accounts.admin_usage(); return [[r["id"],r["username"],r["provider"],r["credits"],"成功" if r["success"] else "失败",r["detail"] or "",r["created_at"]] for r in rows]'''
+          new='''def admin_logs(uid=None):\n try:\n  rows=accounts.usage_for_user(int(uid)) if uid else accounts.admin_usage()\n  return [[r.get("id",""),r.get("username",""),r.get("provider",""),int(r.get("credits",0)),"成功" if r.get("success") else "失败",r.get("detail") or "",r.get("created_at","")] for r in rows]\n except Exception as exc:\n  traceback.print_exc(); return [["","系统","","","错误",f"读取使用记录失败：{exc}",""]]'''
+          if old in s:s=s.replace(old,new)
+          p.write_text(s,encoding='utf-8')
+
+          p=Path('admin_app.py')
+          s=p.read_text(encoding='utf-8')
+          needle='''def usage(uid,token,csrf): return base.admin_usage_view(uid,token,csrf)'''
+          repl=needle+'''\ndef guest_ips(uid,token,csrf):\n    s,m=base._admin(uid,token,csrf)\n    if not s:return []\n    return [[r.get("id",""),r.get("ip") or "-",int(r.get("credits",0)),int(r.get("total_used",0)),r.get("created_at",""),r.get("last_used_at","")] for r in base.accounts.admin_guest_records()]'''
+          if 'def guest_ips(' not in s:s=s.replace(needle,repl)
+          oldtab='''with gr.Tab("📋 使用记录"):\n                    usage_btn=gr.Button("查看全部记录"); logs_table=gr.Dataframe(headers=["ID","用户","引擎","积分","状态","详情","时间"],interactive=False)'''
+          newtab='''with gr.Tab("📋 使用记录"):\n                    usage_btn=gr.Button("查看全部记录"); logs_table=gr.Dataframe(headers=["ID","用户","引擎","积分","状态","详情","时间"],interactive=False)\n                    gr.Markdown("### 游客 IP / 免费积分记录")\n                    guest_ip_btn=gr.Button("查看游客 IP 记录"); guest_ip_table=gr.Dataframe(headers=["ID","IP","剩余免费积分","已使用免费积分","首次记录","最后使用"],interactive=False)'''
+          if oldtab in s:s=s.replace(oldtab,newtab)
+          s=s.replace('usage_btn.click(usage,[user_id,session_token,csrf_token],logs_table)', 'usage_btn.click(usage,[user_id,session_token,csrf_token],logs_table,queue=False)\n        guest_ip_btn.click(guest_ips,[user_id,session_token,csrf_token],guest_ip_table,queue=False)')
+          p.write_text(s,encoding='utf-8')
+          PY
+          python -m py_compile account_system.py gemini_app.py admin_app.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add account_system.py gemini_app.py admin_app.py
+          git diff --cached --quiet || git commit -m "Fix admin records and shared IP free credits"
+          git push
