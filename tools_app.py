@@ -108,9 +108,9 @@ def _member_markdown(user_id):
 
 def toggle_member(user_id, opened):
     if not user_id:
-        return gr.update(visible=False), False, gr.update(visible=True)
+        return gr.update(visible=False), False
     new_open = not bool(opened)
-    return gr.update(visible=new_open), new_open, gr.update(visible=False)
+    return gr.update(visible=new_open), new_open
 
 
 def restore_session(browser_session):
@@ -126,7 +126,7 @@ def restore_session(browser_session):
         name = session["username"]
         return (
             uid, token, csrf,
-            gr.update(visible=False), gr.update(visible=True), "",
+            gr.update(visible=False), gr.update(visible=False), gr.update(visible=True), "",
             bool(session["is_admin"]), gr.update(value=name, visible=True),
             browser_session, gr.update(visible=False), False,
             gr.update(value=_member_markdown(uid)),
@@ -134,7 +134,7 @@ def restore_session(browser_session):
     except Exception:
         return (
             None, None, None,
-            gr.update(visible=False), gr.update(visible=False), "",
+            gr.update(visible=False), gr.update(visible=True), gr.update(visible=False), "",
             False, gr.update(value="登录 / 注册", visible=True), "",
             gr.update(visible=False), False, gr.update(value=""),
         )
@@ -147,21 +147,21 @@ def do_login(username, password, totp, request: gr.Request = None):
         if success:
             return (
                 uid, token, csrf,
-                gr.update(visible=False), gr.update(visible=True), msg,
+                gr.update(visible=False), gr.update(visible=False), gr.update(visible=True), msg,
                 bool(admin), gr.update(value=(username or "").strip(), visible=True),
                 _session_blob(token, csrf), gr.update(visible=False), False,
                 gr.update(value=_member_markdown(uid)),
             )
         return (
             None, None, None,
-            gr.update(visible=True), gr.update(visible=False), msg,
+            gr.update(visible=True), gr.update(visible=True), gr.update(visible=False), msg,
             False, gr.update(value="登录 / 注册", visible=True), "",
             gr.update(visible=False), False, gr.update(value=""),
         )
     except Exception as exc:
         return (
             None, None, None,
-            gr.update(visible=True), gr.update(visible=False), f"❌ 登录失败：{type(exc).__name__}: {exc}",
+            gr.update(visible=True), gr.update(visible=True), gr.update(visible=False), f"❌ 登录失败：{type(exc).__name__}: {exc}",
             False, gr.update(value="登录 / 注册", visible=True), "",
             gr.update(visible=False), False, gr.update(value=""),
         )
@@ -171,7 +171,7 @@ def do_logout(token):
     base.logout(token)
     return (
         None, None, None,
-        gr.update(visible=False), gr.update(visible=False), "",
+        gr.update(visible=False), gr.update(visible=True), gr.update(visible=False), "",
         False, gr.update(value="登录 / 注册", visible=True), "",
         gr.update(visible=False), False, gr.update(value=""),
     )
@@ -189,7 +189,8 @@ def add_header():
         gr.HTML('<a class="zf-logo-link" href="/"><div class="zf-logo"><span>ZOLFOX</span> Tools</div></a>')
         gr.HTML('''<nav class="zf-nav"><a href="/#image-tools">图片工具</a><a href="/#pdf-tools">PDF 工具</a><a href="/#ai-tools">AI 工具</a><a href="/#more-tools">更多工具</a></nav>''')
         with gr.Column(scale=0, min_width=150):
-            login_open = gr.Button("登录 / 注册", size="sm")
+            login_open = gr.Button("登录 / 注册", size="sm", visible=True)
+            member_open = gr.Button("会员中心", size="sm", visible=False)
 
     with gr.Column(visible=False, elem_classes=["zf-tool"]) as auth_panel:
         with gr.Tabs():
@@ -209,24 +210,29 @@ def add_header():
         logout_btn = gr.Button("退出登录")
 
     login_open.click(
+        lambda: gr.update(visible=True),
+        inputs=[],
+        outputs=[auth_panel],
+    )
+    member_open.click(
         toggle_member,
         [user_id, member_opened],
-        [member_panel, member_opened, auth_panel],
+        [member_panel, member_opened],
     )
     login_btn.click(
         do_login,
         [login_user, login_pass, login_totp],
-        [user_id, session_token, csrf_token, auth_panel, login_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
+        [user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, member_open, browser_session, member_panel, member_opened, member_info],
     )
     reg_btn.click(base.auth_register, [reg_user, reg_pass], [auth_message, login_user])
     logout_btn.click(
         do_logout,
         [session_token],
-        [user_id, session_token, csrf_token, auth_panel, login_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
+        [user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, member_open, browser_session, member_panel, member_opened, member_info],
     )
     gr.on(
         inputs=[browser_session],
-        outputs=[user_id, session_token, csrf_token, auth_panel, login_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
+        outputs=[user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, member_open, browser_session, member_panel, member_opened, member_info],
         fn=restore_session,
     )
     return user_id, session_token, csrf_token
