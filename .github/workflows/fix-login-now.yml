@@ -1,0 +1,57 @@
+name: One-shot login fix
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch login and member events
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path("tools_app.py")
+          s = p.read_text(encoding="utf-8")
+          s, n1 = re.subn(
+              r'    login_btn\.click\(\n        do_login,\n        \[login_user, login_pass, login_totp\],\n        \[user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info\],\n    \)',
+              '''    login_btn.click(\n        fn=do_login,\n        inputs=[login_user, login_pass, login_totp],\n        outputs=[user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],\n        queue=False,\n        show_progress="hidden",\n    )''',
+              s,
+              count=1,
+          )
+          s, n2 = re.subn(
+              r'    member_open\.click\(\n        toggle_member,\n        \[user_id, member_opened\],\n        \[member_panel, member_opened\],\n    \)',
+              '''    member_open.click(\n        fn=toggle_member,\n        inputs=[user_id, member_opened],\n        outputs=[member_panel, member_opened, member_info],\n        queue=False,\n        show_progress="hidden",\n    )''',
+              s,
+              count=1,
+          )
+          if n1 != 1:
+              raise SystemExit("login event block not found")
+          if n2 != 1:
+              raise SystemExit("member event block not found")
+          s = re.sub(
+              r'def toggle_member\(user_id, opened\):\n    if not user_id:\n        return gr\.update\(visible=False\), False\n    new_open = not bool\(opened\)\n    return gr\.update\(visible=new_open\), new_open\n',
+              '''def toggle_member(user_id, opened):\n    if not user_id:\n        return gr.update(visible=False), False, gr.update(value="")\n    new_open = not bool(opened)\n    return (\n        gr.update(visible=new_open),\n        new_open,\n        gr.update(value=_member_markdown(user_id)),\n    )\n''',
+              s,
+              count=1,
+          )
+          p.write_text(s, encoding="utf-8")
+          PY
+      - name: Validate
+        run: python -m py_compile tools_app.py
+      - name: Commit and remove workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/fix-login-now.yml
+          git add tools_app.py
+          git commit -m "Fix login and member center events"
+          git push
