@@ -1,0 +1,54 @@
+name: Fix AI provider status labels
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-status-labels:
+    if: "!contains(github.event.head_commit.message, '[skip ai-status]')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Replace temporary status labels
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('gemini_app.py')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+              'gemini_status=gr.Markdown("○ 检测中…")': 'gemini_status=gr.Markdown("● 已配置")',
+              'openai_status=gr.Markdown("○ 检测中…")': 'openai_status=gr.Markdown("● 已配置")',
+          }
+          changed = False
+          for old, new in replacements.items():
+              if old in text:
+                  text = text.replace(old, new)
+                  changed = True
+          if changed:
+              path.write_text(text, encoding='utf-8')
+              print('Updated AI provider status labels.')
+          else:
+              print('No temporary status labels found; no change needed.')
+          PY
+
+      - name: Commit change
+        shell: bash
+        run: |
+          if git diff --quiet -- gemini_app.py; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add gemini_app.py
+          git commit -m 'Fix AI provider status labels [skip ai-status]'
+          git push origin HEAD:main
