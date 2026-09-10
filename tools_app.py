@@ -127,7 +127,7 @@ def restore_session(browser_session):
         return (
             uid, token, csrf,
             gr.update(visible=False), gr.update(visible=False), gr.update(value=name, visible=True), "",
-            bool(session["is_admin"]), browser_session, gr.update(visible=False), False,
+            bool(session["is_admin"]), gr.skip(), gr.update(visible=False), False,
             gr.update(value=_member_markdown(uid)),
         )
     except Exception:
@@ -226,10 +226,11 @@ def add_header():
         [session_token],
         [user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
     )
-    gr.on(
+    browser_session.change(
+        fn=restore_session,
         inputs=[browser_session],
         outputs=[user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
-        fn=restore_session,
+        queue=False,
     )
     return user_id, session_token, csrf_token
 
