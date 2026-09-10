@@ -108,9 +108,13 @@ def _member_markdown(user_id):
 
 def toggle_member(user_id, opened):
     if not user_id:
-        return gr.update(visible=False), False
+        return gr.update(visible=False), False, gr.update(value="")
     new_open = not bool(opened)
-    return gr.update(visible=new_open), new_open
+    return (
+        gr.update(visible=new_open),
+        new_open,
+        gr.update(value=_member_markdown(user_id)),
+    )
 
 
 def restore_session(browser_session):
@@ -211,14 +215,18 @@ def add_header():
         js=True,
     )
     member_open.click(
-        toggle_member,
-        [user_id, member_opened],
-        [member_panel, member_opened],
+        fn=toggle_member,
+        inputs=[user_id, member_opened],
+        outputs=[member_panel, member_opened, member_info],
+        queue=False,
+        show_progress="hidden",
     )
     login_btn.click(
-        do_login,
-        [login_user, login_pass, login_totp],
-        [user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
+        fn=do_login,
+        inputs=[login_user, login_pass, login_totp],
+        outputs=[user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
+        queue=False,
+        show_progress="hidden",
     )
     reg_btn.click(base.auth_register, [reg_user, reg_pass], [auth_message, login_user])
     logout_btn.click(
