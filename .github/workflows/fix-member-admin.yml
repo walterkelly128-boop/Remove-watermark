@@ -1,0 +1,74 @@
+name: Fix member panel and admin slash
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch member panel and admin route
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('tools_app.py')
+          s = p.read_text(encoding='utf-8')
+
+          old_fn = '''def toggle_member(user_id, opened):
+    if not user_id:
+        return gr.update(visible=False), False
+    new_open = not bool(opened)
+    return gr.update(visible=new_open), new_open
+'''
+          new_fn = '''def toggle_member(user_id, opened):
+    if not user_id:
+        return gr.update(visible=False), False, gr.update(value='')
+    new_open = not bool(opened)
+    return gr.update(visible=new_open), new_open, gr.update(value=_member_markdown(user_id))
+'''
+          if old_fn in s:
+              s = s.replace(old_fn, new_fn, 1)
+
+          old_event = '''    member_open.click(
+        toggle_member,
+        [user_id, member_opened],
+        [member_panel, member_opened],
+    )'''
+          new_event = '''    member_open.click(
+        fn=toggle_member,
+        inputs=[user_id, member_opened],
+        outputs=[member_panel, member_opened, member_info],
+        queue=False,
+    )'''
+          if old_event in s:
+              s = s.replace(old_event, new_event, 1)
+
+          p.write_text(s, encoding='utf-8')
+
+          p = Path('server.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('from fastapi import FastAPI', 'from fastapi import FastAPI, Request\nfrom fastapi.responses import RedirectResponse', 1)
+          marker = 'app = mount_gradio_app(app, admin_app.admin_app, path="/admin")\n'
+          insert = marker + '\n@app.get("/admin", include_in_schema=False)\ndef admin_redirect(request: Request):\n    return RedirectResponse(url="/admin/", status_code=307)\n'
+          if marker in s and 'def admin_redirect' not in s:
+              s = s.replace(marker, insert, 1)
+          p.write_text(s, encoding='utf-8')
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools_app.py server.py
+          if git diff --cached --quiet; then
+            echo 'No changes needed'
+            exit 0
+          fi
+          git commit -m 'fix member panel and admin slash route'
+          git push
