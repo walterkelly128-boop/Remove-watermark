@@ -36,6 +36,29 @@ footer,.gradio-footer,.built-with,.svelte-1ipelgc,.svelte-1ax9xii{display:none!i
 @media(max-width:700px){.zf-hero h1{font-size:39px!important}.zf-nav{display:none}.zf-inner-page{padding-left:14px!important;padding-right:14px!important}.zf-member{max-width:none}}
 """
 
+
+SEO_HEAD = r"""
+<meta name="description" content="ZOLFOX Tools 免费在线工具箱：图片去水印、图片压缩、AI 图片修复等实用工具。新用户免费获得 5 积分，无需安装软件，打开浏览器即可使用。">
+<meta name="keywords" content="图片去水印,在线图片去水印,AI图片修复,图片压缩,在线工具,免费工具,ZOLFOX Tools">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<link rel="canonical" href="/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="ZOLFOX Tools · 免费在线工具箱">
+<meta property="og:description" content="图片去水印、图片压缩、AI 图片修复等实用在线工具，新用户免费 5 积分。">
+<script type="application/ld+json">
+{
+  "@context":"https://schema.org",
+  "@type":"WebApplication",
+  "name":"ZOLFOX Tools",
+  "url":"/",
+  "description":"免费在线工具箱，提供图片去水印、图片压缩和 AI 图片修复等工具。",
+  "applicationCategory":"UtilitiesApplication",
+  "operatingSystem":"Web",
+  "offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"新用户免费 5 积分"}
+}
+</script>
+"""
+
 INNER_CSS = SITE_CSS + r"""
 .gradio-container{max-width:none!important;width:100%!important;margin:0!important;padding-left:0!important;padding-right:0!important}
 body{overflow-x:hidden}
@@ -257,15 +280,15 @@ def add_footer():
         <a href="/#ai-tools">AI 工具</a>
         <a href="https://www.zolfox.com" target="_blank" rel="noopener">ZOLFOX</a>
       </div>
-      <div>© ZOLFOX Tools · 实用在线工具箱</div>
+      <div>© 2026 ZOLFOX Tools · 版权所有</div>
     </footer>
     ''')
 
 
 def home_demo():
-    with gr.Blocks(title="ZOLFOX Tools · 在线工具箱", theme=gr.themes.Soft(), css=SITE_CSS) as demo:
+    with gr.Blocks(title="ZOLFOX Tools · 免费在线工具箱", theme=gr.themes.Soft(), css=SITE_CSS, head=SEO_HEAD) as demo:
         add_header()
-        gr.HTML('<div class="zf-hero"><div class="zf-pill">ZOLFOX Tools · 在线工具箱</div><h1>简单、快速、实用的<br><span style="color:#5b5bd6">在线工具</span></h1><p>图片、PDF、AI 与更多常用工具，持续更新中。<br>无需安装软件，打开浏览器即可使用。</p></div>')
+        gr.HTML('<div class="zf-hero"><div class="zf-pill">ZOLFOX Tools · 免费在线工具箱</div><h1>简单、快速、实用的<br><span style="color:#5b5bd6">在线工具</span></h1><p>图片、PDF、AI 与更多常用工具，持续更新中。<br>无需安装软件，打开浏览器即可使用。</p><div style="display:inline-block;margin-top:20px;padding:12px 22px;border-radius:999px;background:#5148c9;color:#fff;font-weight:800;font-size:16px;box-shadow:0 8px 24px rgba(81,72,201,.22)">🎁 新用户免费 5 积分 · 注册即可体验</div></div>')
         gr.Markdown("## 图片工具", elem_id="image-tools")
         with gr.Row():
             with gr.Column(elem_classes=["zf-card"]):
