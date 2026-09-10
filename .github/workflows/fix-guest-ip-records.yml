@@ -1,0 +1,66 @@
+name: Fix guest IP records
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch guest IP records
+        shell: python
+        run: |
+          from pathlib import Path
+          root = Path('.')
+
+          p = root / 'account_system.py'
+          s = p.read_text(encoding='utf-8')
+          marker = '  _migrate_columns(db)\n'
+          insert = '''  db.execute("CREATE TABLE IF NOT EXISTS guest_usage_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,ip TEXT NOT NULL,provider TEXT NOT NULL,credits INTEGER NOT NULL DEFAULT 0,success INTEGER NOT NULL,detail TEXT,created_at TEXT NOT NULL)")\n  db.execute("CREATE INDEX IF NOT EXISTS idx_guest_usage_logs_created ON guest_usage_logs(created_at DESC)")\n'''
+          if 'CREATE TABLE IF NOT EXISTS guest_usage_logs' not in s:
+              s = s.replace(marker, insert + marker, 1)
+          if 'def log_guest_usage(' not in s:
+              needle = 'def refund_credit(user_id,provider,cost=1):\n'
+              fn = '''def log_guest_usage(ip,provider,cost,success,detail=''):\n if not ip:return\n with _connect() as db: db.execute("INSERT INTO guest_usage_logs(ip,provider,credits,success,detail,created_at) VALUES(?,?,?,?,?,?)",(ip,provider,int(cost or 0),int(bool(success)),(detail or '')[:500],_now()))\n'''
+              s = s.replace(needle, fn + needle, 1)
+          old = '''def admin_usage(limit=500):\n with _connect() as db:return [dict(r) for r in db.execute("SELECT * FROM usage_logs ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]\n'''
+          new = '''def admin_usage(limit=500):\n with _connect() as db:\n  user_rows=[dict(r) for r in db.execute("SELECT id,user_id,username,provider,credits,success,detail,created_at,'' AS ip FROM usage_logs ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]\n  guest_rows=[dict(r) for r in db.execute("SELECT id,'' AS user_id,'游客' AS username,provider,credits,success,detail,created_at,ip FROM guest_usage_logs ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]\n  rows=user_rows+guest_rows\n  rows.sort(key=lambda r:r.get('created_at',''),reverse=True)\n  return rows[:limit]\n'''
+          if old in s: s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+
+          p = root / 'gemini_app.py'
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('''  pil=_pil(image)\n if pil is None: raise gr.Error("请先上传图片。")\n mask=decode_mask(mask_data,pil.size)''', '''  pil=_pil(image)\n if pil is None: raise gr.Error("请先上传图片。")\n guest_ip = _client_ip(request) if not user_id else ""\n mask=decode_mask(mask_data,pil.size)''', 1)
+          s = s.replace('''  if user_id: accounts.log_usage(user_id,provider,cost,True,"repair success")\n  return result''', '''  if user_id: accounts.log_usage(user_id,provider,cost,True,"repair success")\n  elif guest_ip: accounts.log_guest_usage(guest_ip,provider,cost,True,"repair success")\n  return result''', 1)
+          s = s.replace('''  if user_id: accounts.log_usage(user_id,provider,cost,False,"credit refunded")\n  raise''', '''  if user_id: accounts.log_usage(user_id,provider,cost,False,"credit refunded")\n  elif guest_ip: accounts.log_guest_usage(guest_ip,provider,cost,False,"credit refunded")\n  raise''', 1)
+          s = s.replace('''  if user_id: accounts.log_usage(user_id,provider,cost,False,str(exc))\n  traceback.print_exc(); raise gr.Error''', '''  if user_id: accounts.log_usage(user_id,provider,cost,False,str(exc))\n  elif guest_ip: accounts.log_guest_usage(guest_ip,provider,cost,False,str(exc))\n  traceback.print_exc(); raise gr.Error''', 1)
+          p.write_text(s, encoding='utf-8')
+
+          p = root / 'admin_app.py'
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('headers=["ID","用户","引擎","积分","状态","详情","时间"]', 'headers=["ID","用户","IP","引擎","积分","状态","详情","时间"]', 1)
+          s = s.replace('[[r.get("id",""),r.get("username",""),r.get("provider",""),int(r.get("credits",0)),"成功" if r.get("success") else "失败",r.get("detail") or "",r.get("created_at","")] for r in rows]', '[[r.get("id",""),r.get("username",""),r.get("ip") or "-",r.get("provider",""),int(r.get("credits",0)),"成功" if r.get("success") else "失败",r.get("detail") or "",r.get("created_at","")] for r in rows]', 1)
+          block = '''                    gr.Markdown("### 游客 IP / 免费积分记录")\n                    guest_ip_btn=gr.Button("查看游客 IP 记录"); guest_ip_table=gr.Dataframe(headers=["ID","IP","剩余免费积分","已使用免费积分","首次记录","最后使用"],interactive=False)\n'''
+          while s.count(block) > 1:
+              first = s.find(block)
+              rest = s.find(block, first + len(block))
+              s = s[:rest] + s[rest+len(block):]
+          p.write_text(s, encoding='utf-8')
+      - name: Validate Python
+        run: python -m py_compile server.py tools_app.py gemini_app.py account_system.py admin_app.py
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add account_system.py gemini_app.py admin_app.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Track guest IP usage records"
+          git push origin main
