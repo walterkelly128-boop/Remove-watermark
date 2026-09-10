@@ -193,8 +193,8 @@ with gr.Blocks(title="AI 图片智能修复",theme=gr.themes.Soft(),css=CSS+CARD
     gr.Markdown("## 选择 AI 修复引擎")
     with gr.Row():
      with gr.Column(elem_classes=["engine-card"]): gr.Markdown("### 🖥️ 本地 LaMa"); local_status=gr.Markdown("● 已就绪"); local_desc=gr.Markdown("本地 CPU · 免费"); local_btn=gr.Button("选择本地",variant="primary")
-     with gr.Column(elem_classes=["engine-card"]): gr.Markdown("### ✨ Gemini"); gemini_status=gr.Markdown("○ 检测中…"); gemini_desc=gr.Markdown("每次 1 积分"); gemini_btn=gr.Button("选择 Gemini")
-     with gr.Column(elem_classes=["engine-card"]): gr.Markdown("### ◉ OpenAI"); openai_status=gr.Markdown("○ 检测中…"); openai_desc=gr.Markdown("每次 3 积分"); openai_btn=gr.Button("选择 OpenAI")
+     with gr.Column(elem_classes=["engine-card"]): gr.Markdown("### ✨ Gemini"); gemini_status=gr.Markdown("● 已配置"); gemini_desc=gr.Markdown("每次 1 积分"); gemini_btn=gr.Button("选择 Gemini")
+     with gr.Column(elem_classes=["engine-card"]): gr.Markdown("### ◉ OpenAI"); openai_status=gr.Markdown("● 已配置"); openai_desc=gr.Markdown("每次 3 积分"); openai_btn=gr.Button("选择 OpenAI")
     selected=gr.State("local"); selected_text=gr.Markdown("**当前引擎：本地 LaMa（免费）**"); restore_btn=gr.Button("🚀 开始修复",variant="primary"); result=gr.Image(label="修复结果",type="pil",format="png")
    with gr.Tab("💰 充值积分"):
     gr.Markdown("## 手动充值\n选择套餐后提交充值申请。管理员确认收款后，会手动审核并自动增加你的积分。**本版本不接入任何线上自动支付。**")
