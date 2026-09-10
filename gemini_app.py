@@ -68,18 +68,21 @@ def ai_restore(provider,image,mask_data,user_id,session_token,csrf_token,request
    if not e.available: raise RuntimeError("管理员尚未配置第三方 API。")
    result=e.repair(pil,mask)
   if user_id: accounts.log_usage(user_id,provider,cost,True,"repair success")
+  elif guest_ip: accounts.log_guest_usage(guest_ip,provider,cost,True,"repair success")
   return result
  except gr.Error:
   if reserved:
    if user_id: accounts.refund_credit(user_id,provider,cost)
    elif guest_ip: accounts.refund_guest(guest_ip,cost)
   if user_id: accounts.log_usage(user_id,provider,cost,False,"credit refunded")
+  elif guest_ip: accounts.log_guest_usage(guest_ip,provider,cost,False,"credit refunded")
   raise
  except Exception as exc:
   if reserved:
    if user_id: accounts.refund_credit(user_id,provider,cost)
    elif guest_ip: accounts.refund_guest(guest_ip,cost)
   if user_id: accounts.log_usage(user_id,provider,cost,False,str(exc))
+  elif guest_ip: accounts.log_guest_usage(guest_ip,provider,cost,False,str(exc))
   traceback.print_exc(); raise gr.Error(f"修复失败：{type(exc).__name__}: {exc}") from exc
 
 def admin_users_view(keyword=""):

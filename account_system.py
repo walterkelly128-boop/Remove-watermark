@@ -49,6 +49,8 @@ def verify_admin_2fa(code):
 def init_db():
  with _connect() as db:
   db.executescript('''CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,credits INTEGER NOT NULL DEFAULT 0,disabled INTEGER NOT NULL DEFAULT 0,is_admin INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,last_login TEXT,failed_logins INTEGER NOT NULL DEFAULT 0,locked_until TEXT); CREATE TABLE IF NOT EXISTS usage_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,username TEXT NOT NULL,provider TEXT NOT NULL,credits INTEGER NOT NULL,success INTEGER NOT NULL,detail TEXT,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS admin_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,admin_user_id INTEGER NOT NULL,admin_username TEXT NOT NULL,action TEXT NOT NULL,target_user_id INTEGER,target_username TEXT,detail TEXT,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS guest_usage(id INTEGER PRIMARY KEY AUTOINCREMENT,guest_key TEXT UNIQUE NOT NULL,credits INTEGER NOT NULL,created_at TEXT NOT NULL,last_used_at TEXT NOT NULL,total_used INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS sessions(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,token_hash TEXT UNIQUE NOT NULL,csrf_hash TEXT NOT NULL,ip TEXT,device_hash TEXT,user_agent TEXT,created_at TEXT NOT NULL,last_seen_at TEXT NOT NULL,expires_at TEXT NOT NULL,revoked INTEGER NOT NULL DEFAULT 0,second_factor INTEGER NOT NULL DEFAULT 0); CREATE INDEX IF NOT EXISTS idx_users_username ON users(username); CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_logs(user_id,created_at DESC); CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit(created_at DESC); CREATE INDEX IF NOT EXISTS idx_guest_last_used ON guest_usage(last_used_at DESC); CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id,revoked,expires_at); CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_hash);''')
+  db.execute("CREATE TABLE IF NOT EXISTS guest_usage_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,ip TEXT NOT NULL,provider TEXT NOT NULL,credits INTEGER NOT NULL DEFAULT 0,success INTEGER NOT NULL,detail TEXT,created_at TEXT NOT NULL)")
+  db.execute("CREATE INDEX IF NOT EXISTS idx_guest_usage_logs_created ON guest_usage_logs(created_at DESC)")
   _migrate_columns(db)
   if ADMIN_PASSWORD and not db.execute("SELECT id FROM users WHERE username=?",(ADMIN_USERNAME,)).fetchone(): db.execute("INSERT INTO users(username,password_hash,is_admin,created_at) VALUES(?,?,1,?)",(ADMIN_USERNAME,_hash_password(ADMIN_PASSWORD),_now()))
 def create_session(user_id,ip="",user_agent="",second_factor=False):
@@ -172,6 +174,9 @@ def guest_stats():
 
 def admin_guest_records(limit=500):
  with _connect() as db:return [dict(r) for r in db.execute("SELECT id,ip,credits,total_used,created_at,last_used_at FROM guest_usage ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]
+def log_guest_usage(ip,provider,cost,success,detail=''):
+ if not ip:return
+ with _connect() as db: db.execute("INSERT INTO guest_usage_logs(ip,provider,credits,success,detail,created_at) VALUES(?,?,?,?,?,?)",(ip,provider,int(cost or 0),int(bool(success)),(detail or '')[:500],_now()))
 def refund_credit(user_id,provider,cost=1):
  if provider=="openai": cost=3
  elif provider=="gemini": cost=1
@@ -186,7 +191,12 @@ def admin_users(keyword=''):
  with _connect() as db:
   q=(keyword or '').strip(); rows=db.execute("SELECT id,username,credits,disabled,is_admin,created_at,last_login FROM users WHERE username LIKE ? ORDER BY id DESC",(f'%{q}%',)).fetchall(); return [dict(r) for r in rows]
 def admin_usage(limit=500):
- with _connect() as db:return [dict(r) for r in db.execute("SELECT * FROM usage_logs ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]
+ with _connect() as db:
+  user_rows=[dict(r) for r in db.execute("SELECT id,user_id,username,provider,credits,success,detail,created_at,'' AS ip FROM usage_logs ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]
+  guest_rows=[dict(r) for r in db.execute("SELECT id,'' AS user_id,'游客' AS username,provider,credits,success,detail,created_at,ip FROM guest_usage_logs ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]
+  rows=user_rows+guest_rows
+  rows.sort(key=lambda r:r.get('created_at',''),reverse=True)
+  return rows[:limit]
 def admin_audit_logs(limit=200):
  with _connect() as db:return [dict(r) for r in db.execute("SELECT * FROM admin_audit ORDER BY id DESC LIMIT ?",(limit,)).fetchall()]
 def audit_admin(admin_user_id,action,target_user_id=None,detail=''):
