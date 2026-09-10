@@ -216,9 +216,11 @@ def add_header():
         [member_panel, member_opened],
     )
     login_btn.click(
-        do_login,
-        [login_user, login_pass, login_totp],
-        [user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
+        fn=do_login,
+        inputs=[login_user, login_pass, login_totp],
+        outputs=[user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
+        queue=False,
+        show_progress='hidden',
     )
     reg_btn.click(base.auth_register, [reg_user, reg_pass], [auth_message, login_user])
     logout_btn.click(
