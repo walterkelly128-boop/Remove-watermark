@@ -216,17 +216,17 @@ def add_header():
     login_btn.click(
         do_login,
         [login_user, login_pass, login_totp],
-        [user_id, session_token, csrf_token, auth_panel, login_open, auth_message, admin_state, login_open, browser_session, member_panel, member_opened, member_info],
+        [user_id, session_token, csrf_token, auth_panel, login_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
     )
     reg_btn.click(base.auth_register, [reg_user, reg_pass], [auth_message, login_user])
     logout_btn.click(
         do_logout,
         [session_token],
-        [user_id, session_token, csrf_token, auth_panel, login_open, auth_message, admin_state, login_open, browser_session, member_panel, member_opened, member_info],
+        [user_id, session_token, csrf_token, auth_panel, login_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
     )
     gr.on(
         inputs=[browser_session],
-        outputs=[user_id, session_token, csrf_token, auth_panel, login_open, auth_message, admin_state, login_open, browser_session, member_panel, member_opened, member_info],
+        outputs=[user_id, session_token, csrf_token, auth_panel, login_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
         fn=restore_session,
     )
     return user_id, session_token, csrf_token
