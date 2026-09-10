@@ -105,6 +105,8 @@ with gr.Blocks(title="ZOLFOX 管理后台",theme=gr.themes.Soft(),css=CSS) as ad
                     guest_ip_btn=gr.Button("查看游客 IP 记录"); guest_ip_table=gr.Dataframe(headers=["ID","IP","剩余免费积分","已使用免费积分","首次记录","最后使用"],interactive=False)
                     gr.Markdown("### 游客 IP / 免费积分记录")
                     guest_ip_btn=gr.Button("查看游客 IP 记录"); guest_ip_table=gr.Dataframe(headers=["ID","IP","剩余免费积分","已使用免费积分","首次记录","最后使用"],interactive=False)
+                    gr.Markdown("### 游客 IP / 免费积分记录")
+                    guest_ip_btn=gr.Button("查看游客 IP 记录"); guest_ip_table=gr.Dataframe(headers=["ID","IP","剩余免费积分","已使用免费积分","首次记录","最后使用"],interactive=False)
                 with gr.Tab("🔐 操作审计"):
                     audit_btn=gr.Button("查看审计记录"); audit_table=gr.Dataframe(headers=["ID","管理员","操作","目标用户","详情","时间"],interactive=False)
         refresh_btn.click(admin_refresh,[user_id,session_token,csrf_token],[admin_stat,users_table,logs_table])
