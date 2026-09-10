@@ -1,0 +1,58 @@
+name: Improve homepage SEO and free credits
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-homepage:
+    if: "!contains(github.event.head_commit.message, '[skip seo-home]')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update homepage
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tools_app.py')
+          text = p.read_text(encoding='utf-8')
+
+          seo = '''\nSEO_HEAD = r"""\n<meta name="description" content="ZOLFOX Tools 免费在线工具箱：图片去水印、图片压缩、AI 图片修复等实用工具。新用户免费获得 5 积分，无需安装软件，打开浏览器即可使用。">\n<meta name="keywords" content="图片去水印,在线图片去水印,AI图片修复,图片压缩,在线工具,免费工具,ZOLFOX Tools">\n<meta name="robots" content="index,follow,max-image-preview:large">\n<link rel="canonical" href="/">\n<meta property="og:type" content="website">\n<meta property="og:title" content="ZOLFOX Tools · 免费在线工具箱">\n<meta property="og:description" content="图片去水印、图片压缩、AI 图片修复等实用在线工具，新用户免费 5 积分。">\n<script type="application/ld+json">\n{\n  "@context":"https://schema.org",\n  "@type":"WebApplication",\n  "name":"ZOLFOX Tools",\n  "url":"/",\n  "description":"免费在线工具箱，提供图片去水印、图片压缩和 AI 图片修复等工具。",\n  "applicationCategory":"UtilitiesApplication",\n  "operatingSystem":"Web",\n  "offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"新用户免费 5 积分"}\n}\n</script>\n"""\n'''
+
+          if 'SEO_HEAD = r"""' not in text:
+              marker = 'INNER_CSS = SITE_CSS + r"""'
+              text = text.replace(marker, seo + '\n' + marker, 1)
+
+          old = 'with gr.Blocks(title="ZOLFOX Tools · 在线工具箱", theme=gr.themes.Soft(), css=SITE_CSS) as demo:'
+          new = 'with gr.Blocks(title="ZOLFOX Tools · 免费在线工具箱", theme=gr.themes.Soft(), css=SITE_CSS, head=SEO_HEAD) as demo:'
+          text = text.replace(old, new, 1)
+
+          old_hero = '<div class="zf-hero"><div class="zf-pill">ZOLFOX Tools · 在线工具箱</div><h1>简单、快速、实用的<br><span style="color:#5b5bd6">在线工具</span></h1><p>图片、PDF、AI 与更多常用工具，持续更新中。<br>无需安装软件，打开浏览器即可使用。</p></div>'
+          new_hero = '<div class="zf-hero"><div class="zf-pill">ZOLFOX Tools · 免费在线工具箱</div><h1>简单、快速、实用的<br><span style="color:#5b5bd6">在线工具</span></h1><p>图片、PDF、AI 与更多常用工具，持续更新中。<br>无需安装软件，打开浏览器即可使用。</p><div style="display:inline-block;margin-top:20px;padding:12px 22px;border-radius:999px;background:#5148c9;color:#fff;font-weight:800;font-size:16px;box-shadow:0 8px 24px rgba(81,72,201,.22)">🎁 新用户免费 5 积分 · 注册即可体验</div></div>'
+          text = text.replace(old_hero, new_hero, 1)
+
+          text = text.replace('<div>© ZOLFOX Tools · 实用在线工具箱</div>', '<div>© 2026 ZOLFOX Tools · 版权所有</div>', 1)
+
+          p.write_text(text, encoding='utf-8')
+          print('Homepage SEO, free 5-credit banner and ZOLFOX copyright updated.')
+          PY
+
+      - name: Commit change
+        shell: bash
+        run: |
+          if git diff --quiet -- tools_app.py; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools_app.py
+          git commit -m 'Improve homepage SEO and show free 5 credits [skip seo-home]'
+          git push origin HEAD:main
