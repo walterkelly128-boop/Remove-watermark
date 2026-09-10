@@ -126,17 +126,15 @@ def restore_session(browser_session):
         name = session["username"]
         return (
             uid, token, csrf,
-            gr.update(visible=False), gr.update(visible=False), gr.update(visible=True), "",
-            bool(session["is_admin"]), gr.update(value=name, visible=True),
-            browser_session, gr.update(visible=False), False,
+            gr.update(visible=False), gr.update(visible=False), gr.update(value=name, visible=True), "",
+            bool(session["is_admin"]), browser_session, gr.update(visible=False), False,
             gr.update(value=_member_markdown(uid)),
         )
     except Exception:
         return (
             None, None, None,
-            gr.update(visible=False), gr.update(visible=True), gr.update(visible=False), "",
-            False, gr.update(value="登录 / 注册", visible=True), "",
-            gr.update(visible=False), False, gr.update(value=""),
+            gr.update(visible=False), gr.update(visible=True), gr.update(value="会员中心", visible=False), "",
+            False, "", gr.update(visible=False), False, gr.update(value=""),
         )
 
 
@@ -147,23 +145,20 @@ def do_login(username, password, totp, request: gr.Request = None):
         if success:
             return (
                 uid, token, csrf,
-                gr.update(visible=False), gr.update(visible=False), gr.update(visible=True), msg,
-                bool(admin), gr.update(value=(username or "").strip(), visible=True),
-                _session_blob(token, csrf), gr.update(visible=False), False,
+                gr.update(visible=False), gr.update(visible=False), gr.update(value=(username or "").strip(), visible=True), msg,
+                bool(admin), _session_blob(token, csrf), gr.update(visible=False), False,
                 gr.update(value=_member_markdown(uid)),
             )
         return (
             None, None, None,
-            gr.update(visible=True), gr.update(visible=True), gr.update(visible=False), msg,
-            False, gr.update(value="登录 / 注册", visible=True), "",
-            gr.update(visible=False), False, gr.update(value=""),
+            gr.update(visible=True), gr.update(visible=True), gr.update(value="会员中心", visible=False), msg,
+            False, "", gr.update(visible=False), False, gr.update(value=""),
         )
     except Exception as exc:
         return (
             None, None, None,
-            gr.update(visible=True), gr.update(visible=True), gr.update(visible=False), f"❌ 登录失败：{type(exc).__name__}: {exc}",
-            False, gr.update(value="登录 / 注册", visible=True), "",
-            gr.update(visible=False), False, gr.update(value=""),
+            gr.update(visible=True), gr.update(visible=True), gr.update(value="会员中心", visible=False), f"❌ 登录失败：{type(exc).__name__}: {exc}",
+            False, "", gr.update(visible=False), False, gr.update(value=""),
         )
 
 
@@ -171,9 +166,8 @@ def do_logout(token):
     base.logout(token)
     return (
         None, None, None,
-        gr.update(visible=False), gr.update(visible=True), gr.update(visible=False), "",
-        False, gr.update(value="登录 / 注册", visible=True), "",
-        gr.update(visible=False), False, gr.update(value=""),
+        gr.update(visible=False), gr.update(visible=True), gr.update(value="会员中心", visible=False), "",
+        False, "", gr.update(visible=False), False, gr.update(value=""),
     )
 
 
@@ -222,17 +216,17 @@ def add_header():
     login_btn.click(
         do_login,
         [login_user, login_pass, login_totp],
-        [user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, member_open, browser_session, member_panel, member_opened, member_info],
+        [user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
     )
     reg_btn.click(base.auth_register, [reg_user, reg_pass], [auth_message, login_user])
     logout_btn.click(
         do_logout,
         [session_token],
-        [user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, member_open, browser_session, member_panel, member_opened, member_info],
+        [user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
     )
     gr.on(
         inputs=[browser_session],
-        outputs=[user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, member_open, browser_session, member_panel, member_opened, member_info],
+        outputs=[user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
         fn=restore_session,
     )
     return user_id, session_token, csrf_token
