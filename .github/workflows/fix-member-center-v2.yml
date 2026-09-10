@@ -1,0 +1,74 @@
+name: Fix member center v2
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch tools_app.py
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('tools_app.py')
+          s = p.read_text(encoding='utf-8')
+
+          # Replace toggle_member by slicing between function definitions.
+          start = s.index('def toggle_member(user_id, opened):')
+          end = s.index('\ndef restore_session(', start)
+          new_func = '''def toggle_member(user_id, opened):
+              if not user_id:
+                  return gr.update(visible=False), False, gr.update(value="")
+              new_open = not bool(opened)
+              return (
+                  gr.update(visible=new_open),
+                  new_open,
+                  gr.update(value=_member_markdown(user_id)),
+              )
+
+'''
+          # Remove the accidental indentation from the triple-quoted function body.
+          new_func = '\n'.join(line[12:] if line.startswith('            ') else line for line in new_func.splitlines()) + '\n'
+          s = s[:start] + new_func + s[end + 1:]
+
+          # Replace the exact member_open click block, regardless of old formatting.
+          start = s.index('    member_open.click(')
+          end = s.index('\n    login_btn.click(', start)
+          new_click = '''    member_open.click(
+        fn=toggle_member,
+        inputs=[user_id, member_opened],
+        outputs=[member_panel, member_opened, member_info],
+        queue=False,
+    )'''
+          s = s[:start] + new_click + s[end:]
+
+          p.write_text(s, encoding='utf-8')
+
+      - name: Validate
+        shell: bash
+        run: |
+          python -m py_compile tools_app.py
+          grep -A7 -B1 'def toggle_member' tools_app.py
+          grep -A6 -B1 'member_open.click' tools_app.py
+
+      - name: Commit
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools_app.py
+          if git diff --cached --quiet; then
+            echo 'No changes needed'
+            exit 0
+          fi
+          git commit -m 'fix member center data display'
+          git push
