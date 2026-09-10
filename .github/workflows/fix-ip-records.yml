@@ -55,18 +55,25 @@ jobs:
           if oldtab in s:s=s.replace(oldtab,newtab)
           s=s.replace('usage_btn.click(usage,[user_id,session_token,csrf_token],logs_table)', 'usage_btn.click(usage,[user_id,session_token,csrf_token],logs_table,queue=False)\n        guest_ip_btn.click(guest_ips,[user_id,session_token,csrf_token],guest_ip_table,queue=False)')
           p.write_text(s,encoding='utf-8')
+
+          p=Path('tools_app.py'); s=p.read_text(encoding='utf-8')
+          old='''    logout_btn.click(\n        do_logout,\n        [session_token],\n        [user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],\n    )'''
+          new='''    logout_btn.click(\n        do_logout,\n        [session_token],\n        [user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],\n        queue=False,\n        show_progress="hidden",\n    )'''
+          if old in s:s=s.replace(old,new,1)
+          elif 'show_progress="hidden"' not in s[s.find('logout_btn.click('):s.find('logout_btn.click(')+700]: raise SystemExit('logout block not found')
+          p.write_text(s,encoding='utf-8')
           PY
 
-          python -m py_compile account_system.py gemini_app.py admin_app.py
+          python -m py_compile account_system.py gemini_app.py admin_app.py tools_app.py
 
       - name: Commit and push safely
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add account_system.py gemini_app.py admin_app.py
+          git add account_system.py gemini_app.py admin_app.py tools_app.py
           git diff --cached --quiet && exit 0
-          git commit -m "Fix admin records and shared IP free credits"
+          git commit -m "Fix logout queue spinner"
           git fetch origin main
           git rebase origin/main
           git push origin HEAD:main
