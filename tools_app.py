@@ -233,6 +233,8 @@ def add_header():
         do_logout,
         [session_token],
         [user_id, session_token, csrf_token, auth_panel, login_open, member_open, auth_message, admin_state, browser_session, member_panel, member_opened, member_info],
+        queue=False,
+        show_progress="hidden",
     )
     browser_session.change(
         fn=restore_session,
