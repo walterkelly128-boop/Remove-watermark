@@ -4,6 +4,7 @@ from pathlib import Path
 import base64
 import io
 import json
+import time
 import traceback
 
 import numpy as np
@@ -67,9 +68,6 @@ EDITOR_JS = r"""
   }
 
   function findMaskBox() {
-    // IMPORTANT: the Gradio component must remain in the DOM. It is visually
-    // hidden with CSS, not Gradio visible=false, otherwise JS cannot update
-    // the React-controlled textbox and the backend receives an empty mask.
     return document.querySelector('#mask-data textarea') ||
            document.querySelector('#mask-data input');
   }
@@ -113,21 +111,16 @@ EDITOR_JS = r"""
       return false;
     }
     const encoded = encodeRLE(state);
-    const value = encoded.value;
-
-    setNativeValue(box, value);
-    // React/Gradio controlled input needs a real input/change event after the
-    // native setter. Do both events and keep the value in the DOM.
+    setNativeValue(box, encoded.value);
     box.dispatchEvent(new InputEvent('input', {
       bubbles: true,
       inputType: 'insertText',
       data: null
     }));
     box.dispatchEvent(new Event('change', { bubbles: true }));
-
     const label = state.root.querySelector('.wm-mask-count');
     if (label) label.textContent = `Mask: ${encoded.count.toLocaleString()} px`;
-    state.lastMaskValue = value;
+    state.lastMaskValue = encoded.value;
     console.log('[mask] synced', encoded.count, 'px');
     return true;
   }
@@ -246,9 +239,7 @@ EDITOR_JS = r"""
       if (!state.drawing) return;
       state.drawing = false;
       state.last = null;
-      if (e && overlay.hasPointerCapture(e.pointerId)) {
-        overlay.releasePointerCapture(e.pointerId);
-      }
+      if (e && overlay.hasPointerCapture(e.pointerId)) overlay.releasePointerCapture(e.pointerId);
       syncMask(state);
     }
 
@@ -304,8 +295,6 @@ EDITOR_JS = r"""
     maskImg.src = 'data:image/png;base64,' + payload.mask;
     if (img.complete) fit();
 
-    // Capture phase guarantees the latest brush state is serialized before
-    // Gradio handles the repair button click.
     const repair = document.querySelector('#restore-btn button') || document.querySelector('#restore-btn');
     if (repair) repair.addEventListener('click', () => syncMask(state), true);
   }
@@ -332,9 +321,7 @@ def build_editor(image: Image.Image, mask: np.ndarray) -> str:
         'image': _b64_png(image),
         'mask': _b64_png(Image.fromarray(mask, 'L')),
     }
-    encoded = base64.b64encode(
-        json.dumps(payload, separators=(',', ':')).encode('utf-8')
-    ).decode('ascii')
+    encoded = base64.b64encode(json.dumps(payload, separators=(',', ':')).encode('utf-8')).decode('ascii')
     return f'''<div class="wm-editor" data-payload="{encoded}">
   <div class="wm-stage"><img class="wm-image" alt="原图" draggable="false"><canvas class="wm-canvas"></canvas></div>
   <div class="wm-toolbar">
@@ -390,18 +377,26 @@ def decode_mask(data, size):
 
 
 def auto_detect(image):
+    started = time.perf_counter()
+    print('[auto_detect] request received', flush=True)
     if image is None:
+        print('[auto_detect] no image', flush=True)
         return None, None, '⚠️ 请先上传图片。', ''
     try:
         pil = _pil(image)
+        print(f'[auto_detect] image={pil.width}x{pil.height}', flush=True)
         mask = np.asarray(detect_candidates(pil), dtype=np.uint8)
         if mask.shape != (pil.height, pil.width):
             mask = np.asarray(Image.fromarray(mask, 'L').resize(pil.size, Image.Resampling.NEAREST))
         mask = np.where(mask > 30, 255, 0).astype(np.uint8)
         pixels = int(np.count_nonzero(mask))
-        return overlay_mask(pil, mask), build_editor(pil, mask), f'✅ 自动识别完成：{pixels:,} 个 Mask 像素。', _mask_rle(mask)
+        elapsed = time.perf_counter() - started
+        print(f'[auto_detect] done: {pixels:,} px in {elapsed:.2f}s', flush=True)
+        return overlay_mask(pil, mask), build_editor(pil, mask), f'✅ 自动识别完成：{pixels:,} 个 Mask 像素，用时 {elapsed:.2f} 秒。', _mask_rle(mask)
     except Exception as exc:
+        elapsed = time.perf_counter() - started
         traceback.print_exc()
+        print(f'[auto_detect] FAILED after {elapsed:.2f}s: {type(exc).__name__}: {exc}', flush=True)
         return None, None, f'❌ 自动识别失败：{type(exc).__name__}: {exc}', ''
 
 
@@ -453,15 +448,22 @@ with gr.Blocks(title='AI 图片智能修复', theme=gr.themes.Soft(), css=CSS, h
             preview = gr.Image(label='自动识别预览（红色=候选区域）', type='pil')
     gr.Markdown('## Mask 编辑器')
     editor = gr.HTML(label='Mask 编辑器')
-    # Do NOT use visible=False here. The JavaScript editor must update this
-    # React-controlled component before the repair event reaches Python.
     mask_data = gr.Textbox(label='', elem_id='mask-data', visible=True, container=False)
     restore_btn = gr.Button('🚀 AI 智能修复', variant='primary', elem_id='restore-btn')
     result = gr.Image(label='修复结果', type='pil', format='png')
 
-    source.change(reset_editor, inputs=source, outputs=[editor, mask_data])
-    auto_btn.click(auto_detect, inputs=source, outputs=[preview, editor, status, mask_data], show_progress='minimal')
-    clear_btn.click(reset_editor, inputs=source, outputs=[editor, mask_data])
+    source.change(reset_editor, inputs=source, outputs=[editor, mask_data], queue=False)
+    # Candidate detection is a lightweight CPU/OpenCV operation. Running this
+    # event outside Gradio's queue avoids the "queue/join succeeds but nothing
+    # returns" symptom seen in some Gradio 6.x + reverse-path deployments.
+    auto_btn.click(
+        auto_detect,
+        inputs=source,
+        outputs=[preview, editor, status, mask_data],
+        queue=False,
+        show_progress='minimal',
+    )
+    clear_btn.click(reset_editor, inputs=source, outputs=[editor, mask_data], queue=False)
     restore_btn.click(restore, inputs=[source, mask_data], outputs=result)
 
 if __name__ == '__main__':
