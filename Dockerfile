@@ -18,8 +18,9 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     && python -m pip install --only-binary=:all: -r requirements.txt \
     && rm -rf /root/.cache/pip
 
-COPY app.py gemini_app.py tools_app.py image_compress.py ai_provider_engine.py account_system.py recharge_system.py admin_app.py server.py ./
+COPY app.py gemini_app.py tools_app.py image_compress.py ai_provider_engine.py account_system.py recharge_system.py admin_app.py server.py patch_tools_app.py ./
 COPY core ./core
+RUN python patch_tools_app.py && rm -f patch_tools_app.py
 RUN mkdir -p /app/models /app/data /app/data/output
 
 EXPOSE 7860
