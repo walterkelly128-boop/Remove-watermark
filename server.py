@@ -7,6 +7,16 @@ from gradio import mount_gradio_app
 import tools_app
 import admin_app
 
+# Gradio mounted under FastAPI needs its queue infrastructure initialized before
+# mount_gradio_app(). Individual lightweight events such as auto-detect still use
+# queue=False, but the Blocks queue itself must exist for the mounted app to
+# initialize and handle its API dependencies correctly.
+try:
+    tools_app.remove_watermark.queue(default_concurrency_limit=1)
+    print("[startup] remove-watermark Gradio queue initialized", flush=True)
+except Exception as exc:
+    print(f"[startup] remove-watermark queue init failed: {type(exc).__name__}: {exc}", flush=True)
+
 app = FastAPI(title="ZOLFOX Tools")
 
 # Make both /admin and /admin/ work. Gradio's mounted app uses the trailing-slash
