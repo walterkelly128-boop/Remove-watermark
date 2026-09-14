@@ -7,10 +7,14 @@ from gradio import mount_gradio_app
 import tools_app
 import admin_app
 
-# Gradio mounted under FastAPI needs its queue infrastructure initialized before
-# mount_gradio_app(). Individual lightweight events such as auto-detect still use
-# queue=False, but the Blocks queue itself must exist for the mounted app to
-# initialize and handle its API dependencies correctly.
+# IMPORTANT:
+# Do not mount tools_app.app at / and then mount another Gradio app inside it.
+# That creates a nested FastAPI/Gradio mount and can break Gradio event routing
+# under a subpath (the page loads, uploads work, but button callbacks never
+# reach the Python function). Mount every Gradio Blocks instance directly on
+# the single top-level FastAPI application instead.
+
+# The mounted remove-watermark Blocks needs its queue initialized before mount.
 try:
     tools_app.remove_watermark.queue(default_concurrency_limit=1)
     print("[startup] remove-watermark Gradio queue initialized", flush=True)
@@ -19,14 +23,15 @@ except Exception as exc:
 
 app = FastAPI(title="ZOLFOX Tools")
 
-# Make both /admin and /admin/ work. Gradio's mounted app uses the trailing-slash
-# form internally, while users should be able to type /admin directly.
 @app.get("/admin", include_in_schema=False)
 def admin_root():
     return RedirectResponse(url="/admin/", status_code=307)
 
+# Direct, top-level mounts. No nested Gradio mount.
 app = mount_gradio_app(app, admin_app.admin_app, path="/admin")
-app.mount("/", tools_app.app)
+app = mount_gradio_app(app, tools_app.home, path="/")
+app = mount_gradio_app(app, tools_app.remove_watermark, path="/remove-watermark")
+app = mount_gradio_app(app, tools_app.image_compress, path="/image-compress")
 
 if __name__ == "__main__":
     import uvicorn
