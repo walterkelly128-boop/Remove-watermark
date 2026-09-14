@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 
 import numpy as np
@@ -14,19 +15,14 @@ from core.detector import detect_candidates, overlay_mask
 from app import build_editor, _mask_rle
 
 
-# IMPORTANT:
-# The watermark detector must not depend on Gradio's queue/event transport.
-# The browser uploads the image through Gradio, but the actual detection call
-# is handled by a plain FastAPI endpoint. This avoids the queue/join problem
-# that was causing the button to appear to do nothing under a mounted app.
+# The detector is exposed through a plain FastAPI endpoint instead of relying
+# on Gradio's queue/event transport. The Gradio upload is still used as the
+# source image, but the actual detection request bypasses queue/join entirely.
 
 def _png_b64(image: Image.Image) -> str:
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii")
-
-
-@app_placeholder = None
 
 
 def _detect_upload(data: bytes):
@@ -76,11 +72,10 @@ DETECT_JS = r"""
 
   function findSourceImage() {
     const candidates = [...document.querySelectorAll('img')].filter(visible);
-    const src = candidates.find(img => {
+    return candidates.find(img => {
       const s = img.getAttribute('src') || '';
       return s.includes('/gradio_api/file') || s.startsWith('blob:') || s.startsWith('data:image');
-    });
-    return src || candidates[0] || null;
+    }) || candidates[0] || null;
   }
 
   function findPreviewImage() {
@@ -92,6 +87,7 @@ DETECT_JS = r"""
       created.style.maxWidth = '100%';
       created.style.maxHeight = '620px';
       created.style.objectFit = 'contain';
+      created.style.display = 'block';
       comp.appendChild(created);
       return created;
     }
@@ -121,13 +117,10 @@ DETECT_JS = r"""
   }
 
   function setStatus(text) {
-    const comp = findLabeledComponent('状态');
-    if (comp) {
-      const md = comp.querySelector('.prose, [data-testid="markdown"]');
-      if (md) md.textContent = text;
-    }
-    const all = [...document.querySelectorAll('div, p, span')];
-    const status = all.find(x => (x.textContent || '').trim() === '上传图片后开始。');
+    const status = [...document.querySelectorAll('div, p, span')].find(x =>
+      (x.textContent || '').trim() === '上传图片后开始。' ||
+      (x.textContent || '').trim().startsWith('⏳ 正在自动识别')
+    );
     if (status) status.textContent = text;
   }
 
@@ -135,7 +128,7 @@ DETECT_JS = r"""
     if (e) {
       e.preventDefault();
       e.stopPropagation();
-      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+      e.stopImmediatePropagation();
     }
 
     const btn = findButton();
@@ -212,18 +205,14 @@ def create_app():
         try:
             data = await file.read()
             if not data:
-                return Response('{"ok":false,"detail":"文件为空"}', status_code=400, media_type="application/json")
+                return {"ok": False, "detail": "文件为空"}
             if len(data) > 25 * 1024 * 1024:
-                return Response('{"ok":false,"detail":"图片不能超过 25MB"}', status_code=413, media_type="application/json")
+                return {"ok": False, "detail": "图片不能超过 25MB"}
             return _detect_upload(data)
         except Exception as exc:
             import traceback
             traceback.print_exc()
-            return Response(
-                '{"ok":false,"detail":' + __import__('json').dumps(f'{type(exc).__name__}: {exc}', ensure_ascii=False) + '}',
-                status_code=500,
-                media_type="application/json",
-            )
+            return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
 
     # Direct, top-level mounts. No nested Gradio mount.
     app = mount_gradio_app(app, admin_app.admin_app, path="/admin")
@@ -236,7 +225,7 @@ def create_app():
 app = create_app()
 
 # Inject the direct-detection browser code into the watermark page only.
-# This intentionally bypasses Gradio's queue/join transport for this one action.
+# This intentionally bypasses Gradio's queue/join transport for this action.
 @app.middleware("http")
 async def inject_direct_detector(request, call_next):
     response = await call_next(request)
