@@ -36,183 +36,90 @@ def _detect_upload(data: bytes):
     }
 
 
-# This script deliberately uses the browser's actual <input type=file> instead
-# of trying to discover Gradio's internal preview <img>. That makes detection
-# independent of Gradio's changing DOM and prevents the old queue event from
-# swallowing the button click.
-DIRECT_DETECT_JS = r'''<script>
+DIRECT_DETECT_JS = r'''<script id="zolfox-direct-detect-v4">
 (() => {
-  if (window.__zolfoxDirectDetectV3) return;
-  window.__zolfoxDirectDetectV3 = true;
+  if (window.__zolfoxDirectDetectV4) return;
+  window.__zolfoxDirectDetectV4 = true;
+  console.log('[zolfox-direct-detect-v4] loaded');
   const API = '/remove-watermark/api/detect';
-
   const q = s => document.querySelector(s);
   const button = () => q('#wm-auto-detect button') || q('#wm-auto-detect');
   const sourceInput = () => q('#wm-source input[type="file"]');
   const status = () => q('#wm-status');
   const previewRoot = () => q('#wm-preview');
   const editorRoot = () => q('#wm-editor');
-
-  function setStatus(text) {
-    const el = status();
-    if (el) el.textContent = text;
-  }
-
+  function setStatus(text) { const el=status(); if(el) el.textContent=text; }
   function showPreview(data) {
-    const root = previewRoot();
-    if (!root) throw new Error('找不到识别预览区域 #wm-preview');
-    let img = root.querySelector('.zf-detect-preview');
-    if (!img) {
-      img = document.createElement('img');
-      img.className = 'zf-detect-preview';
-      img.alt = '自动识别候选区域预览';
-      img.style.display = 'block';
-      img.style.width = '100%';
-      img.style.maxWidth = '100%';
-      img.style.maxHeight = '620px';
-      img.style.objectFit = 'contain';
-      img.style.borderRadius = '8px';
-      root.appendChild(img);
-    }
-    img.src = 'data:image/png;base64,' + data.preview;
+    const root=previewRoot(); if(!root) throw new Error('找不到 #wm-preview');
+    let img=root.querySelector('.zf-detect-preview');
+    if(!img){img=document.createElement('img');img.className='zf-detect-preview';img.alt='自动识别候选区域预览';img.style.cssText='display:block;width:100%;max-width:100%;max-height:620px;object-fit:contain;border-radius:8px';root.appendChild(img)}
+    img.src='data:image/png;base64,'+data.preview;
   }
-
-  function setMask(value) {
-    const box = q('#mask-data textarea') || q('#mask-data input');
-    if (!box) return;
-    const proto = box instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-    if (setter) setter.call(box, value); else box.value = value;
-    box.dispatchEvent(new Event('input', {bubbles:true}));
-    box.dispatchEvent(new Event('change', {bubbles:true}));
-  }
-
-  function setEditor(html) {
-    const root = editorRoot();
-    if (!root) return;
-    root.innerHTML = html || '';
-  }
-
-  async function detect() {
-    const btn = button();
-    if (btn?.dataset.zfBusy === '1') return;
-    const input = sourceInput();
-    const file = input?.files?.[0];
-    if (!file) {
-      setStatus('⚠️ 请先上传图片。');
-      return;
-    }
-    if (btn) {
-      btn.dataset.zfBusy = '1';
-      btn.disabled = true;
-    }
-    try {
+  function setNativeValue(el,value){const p=el instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;const s=Object.getOwnPropertyDescriptor(p,'value')?.set;if(s)s.call(el,value);else el.value=value;}
+  function setMask(value){const box=q('#mask-data textarea')||q('#mask-data input');if(!box)return;setNativeValue(box,value);box.dispatchEvent(new Event('input',{bubbles:true}));box.dispatchEvent(new Event('change',{bubbles:true}));}
+  function setEditor(html){const root=editorRoot();if(root)root.innerHTML=html||'';}
+  async function detect(){
+    const btn=button();if(btn?.dataset.zfBusy==='1')return;
+    const input=sourceInput();const file=input?.files?.[0];
+    console.log('[zolfox-direct-detect-v4] click',{input:!!input,file:file?.name||null});
+    if(!file){setStatus('⚠️ 请先上传图片。');return;}
+    if(btn){btn.dataset.zfBusy='1';btn.disabled=true;}
+    try{
       setStatus('⏳ 正在自动识别候选区域，请稍候…');
-      const form = new FormData();
-      form.append('file', file, file.name || 'source.png');
-      const response = await fetch(API + '?_=' + Date.now(), {
-        method: 'POST',
-        body: form,
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: {'Cache-Control':'no-cache'}
-      });
-      const text = await response.text();
-      let data;
-      try { data = JSON.parse(text); } catch (_) { throw new Error('服务器返回的不是 JSON：' + text.slice(0,200)); }
-      if (!response.ok || !data.ok) throw new Error(data.detail || ('HTTP ' + response.status));
-      showPreview(data);
-      setMask(data.mask || '');
-      setEditor(data.editor || '');
-      setStatus('✅ 自动识别完成：' + Number(data.pixels || 0).toLocaleString() + ' 个 Mask 像素。');
-      console.log('[zolfox-direct-detect-v3] success', data.width, data.height, data.pixels);
-    } catch (err) {
-      console.error('[zolfox-direct-detect-v3] failed', err);
-      setStatus('❌ 自动识别失败：' + (err?.message || err));
-      alert('自动识别失败：' + (err?.message || err));
-    } finally {
-      if (btn) { btn.disabled = false; delete btn.dataset.zfBusy; }
-    }
+      const form=new FormData();form.append('file',file,file.name||'source.png');
+      const response=await fetch(API+'?_='+Date.now(),{method:'POST',body:form,credentials:'same-origin',cache:'no-store',headers:{'Cache-Control':'no-cache'}});
+      const text=await response.text();let data;try{data=JSON.parse(text)}catch(_){throw new Error('服务器返回非 JSON：'+text.slice(0,200))}
+      if(!response.ok||!data.ok)throw new Error(data.detail||('HTTP '+response.status));
+      showPreview(data);setMask(data.mask||'');setEditor(data.editor||'');setStatus('✅ 自动识别完成：'+Number(data.pixels||0).toLocaleString()+' 个 Mask 像素。');
+      console.log('[zolfox-direct-detect-v4] success',data.width,data.height,data.pixels);
+    }catch(err){console.error('[zolfox-direct-detect-v4] failed',err);setStatus('❌ 自动识别失败：'+(err?.message||err));alert('自动识别失败：'+(err?.message||err));}
+    finally{if(btn){btn.disabled=false;delete btn.dataset.zfBusy;}}
   }
-
-  function stop(e) {
-    const b = button();
-    if (!b) return;
-    if (e.target === b || b.contains(e.target)) {
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-      if (e.type === 'click') detect();
-      return false;
-    }
-  }
-
-  function install() {
-    const b = button();
-    if (!b || b.dataset.zfDirectV3 === '1') return;
-    b.dataset.zfDirectV3 = '1';
-    // Capture phase blocks any Gradio click/queue listener below us.
-    ['pointerdown','mousedown','click'].forEach(type => b.addEventListener(type, stop, true));
-    console.log('[zolfox-direct-detect-v3] installed');
-  }
-
-  const observer = new MutationObserver(install);
-  observer.observe(document.documentElement, {childList:true, subtree:true});
-  install();
+  function intercept(e){const b=button();if(!b||!(e.target===b||b.contains(e.target)))return;e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();if(e.type==='click')detect();return false;}
+  function install(){const b=button();if(!b||b.dataset.zfDirectV4==='1')return;b.dataset.zfDirectV4='1';['pointerdown','mousedown','click'].forEach(t=>b.addEventListener(t,intercept,true));console.log('[zolfox-direct-detect-v4] installed');}
+  const observer=new MutationObserver(install);observer.observe(document.documentElement,{childList:true,subtree:true});install();
 })();
 </script>'''
 
 
 def create_app():
     app = FastAPI(title="ZOLFOX Tools")
-
     @app.get("/admin", include_in_schema=False)
-    def admin_root():
-        return RedirectResponse(url="/admin/", status_code=307)
-
+    def admin_root(): return RedirectResponse(url="/admin/", status_code=307)
     @app.post("/remove-watermark/api/detect")
     async def detect_api(file: UploadFile = File(...)):
         try:
-            data = await file.read()
-            if not data:
-                return {"ok": False, "detail": "文件为空"}
-            if len(data) > 25 * 1024 * 1024:
-                return {"ok": False, "detail": "图片不能超过 25MB"}
+            data=await file.read()
+            if not data:return {"ok":False,"detail":"文件为空"}
+            if len(data)>25*1024*1024:return {"ok":False,"detail":"图片不能超过 25MB"}
             return _detect_upload(data)
         except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
-
-    app = mount_gradio_app(app, admin_app.admin_app, path="/admin")
-    app = mount_gradio_app(app, tools_app.home, path="/")
-    app = mount_gradio_app(app, tools_app.remove_watermark, path="/remove-watermark")
-    app = mount_gradio_app(app, tools_app.image_compress, path="/image-compress")
+            import traceback;traceback.print_exc();return {"ok":False,"detail":f"{type(exc).__name__}: {exc}"}
+    app=mount_gradio_app(app,admin_app.admin_app,path="/admin")
+    app=mount_gradio_app(app,tools_app.home,path="/")
+    app=mount_gradio_app(app,tools_app.remove_watermark,path="/remove-watermark")
+    app=mount_gradio_app(app,tools_app.image_compress,path="/image-compress")
     return app
 
-
-app = create_app()
-
+app=create_app()
 
 @app.middleware("http")
-async def inject_direct_detector(request, call_next):
-    response = await call_next(request)
-    if request.url.path.rstrip("/") != "/remove-watermark":
-        return response
-    content_type = response.headers.get("content-type", "")
-    if "text/html" not in content_type:
-        return response
-    body = b"".join([chunk async for chunk in response.body_iterator])
-    marker = b"</head>"
-    if marker in body:
-        body = body.replace(marker, DIRECT_DETECT_JS.encode("utf-8") + marker, 1)
-    headers = dict(response.headers)
-    headers.pop("content-length", None)
-    headers.pop("content-encoding", None)
-    headers["cache-control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    return Response(content=body, status_code=response.status_code, headers=headers, media_type="text/html")
+async def inject_direct_detector(request,call_next):
+    response=await call_next(request)
+    if request.url.path.rstrip("/")!="/remove-watermark":return response
+    content_type=response.headers.get("content-type","")
+    if "text/html" not in content_type:return response
+    body=b"".join([chunk async for chunk in response.body_iterator])
+    script=DIRECT_DETECT_JS.encode("utf-8")
+    inserted=False
+    for marker in (b"</head>",b"</HEAD>",b"<body",b"<BODY"):
+        pos=body.find(marker)
+        if pos>=0:
+            body=body[:pos]+script+body[pos:];inserted=True;break
+    if not inserted:body+=script
+    headers=dict(response.headers);headers.pop("content-length",None);headers.pop("content-encoding",None)
+    headers["cache-control"]="no-store, no-cache, must-revalidate, max-age=0";headers["x-zolfox-direct-detect"]="v4"
+    return Response(content=body,status_code=response.status_code,headers=headers,media_type="text/html")
 
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "7860")))
+if __name__=="__main__":
+    import uvicorn;uvicorn.run(app,host="0.0.0.0",port=int(os.getenv("PORT","7860")))
