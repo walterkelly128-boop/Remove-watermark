@@ -36,90 +36,208 @@ def _detect_upload(data: bytes):
     }
 
 
-DIRECT_DETECT_JS = r'''<script id="zolfox-direct-detect-v4">
+DIRECT_DETECT_JS = r'''<script id="zolfox-direct-detect-v5">
 (() => {
-  if (window.__zolfoxDirectDetectV4) return;
-  window.__zolfoxDirectDetectV4 = true;
-  console.log('[zolfox-direct-detect-v4] loaded');
+  if (window.__zolfoxDirectDetectV5) return;
+  window.__zolfoxDirectDetectV5 = true;
+  console.log('[zolfox-direct-detect-v5] loaded');
+
   const API = '/remove-watermark/api/detect';
   const q = s => document.querySelector(s);
-  const button = () => q('#wm-auto-detect button') || q('#wm-auto-detect');
+  const wrap = () => q('#wm-auto-detect');
   const sourceInput = () => q('#wm-source input[type="file"]');
   const status = () => q('#wm-status');
   const previewRoot = () => q('#wm-preview');
   const editorRoot = () => q('#wm-editor');
-  function setStatus(text) { const el=status(); if(el) el.textContent=text; }
+
+  function setStatus(text) {
+    const el = status();
+    if (el) el.textContent = text;
+  }
+
   function showPreview(data) {
-    const root=previewRoot(); if(!root) throw new Error('找不到 #wm-preview');
-    let img=root.querySelector('.zf-detect-preview');
-    if(!img){img=document.createElement('img');img.className='zf-detect-preview';img.alt='自动识别候选区域预览';img.style.cssText='display:block;width:100%;max-width:100%;max-height:620px;object-fit:contain;border-radius:8px';root.appendChild(img)}
-    img.src='data:image/png;base64,'+data.preview;
+    const root = previewRoot();
+    if (!root) throw new Error('找不到 #wm-preview');
+    let img = root.querySelector('.zf-detect-preview');
+    if (!img) {
+      img = document.createElement('img');
+      img.className = 'zf-detect-preview';
+      img.alt = '自动识别候选区域预览';
+      img.style.cssText = 'display:block;width:100%;max-width:100%;max-height:620px;object-fit:contain;border-radius:8px';
+      root.appendChild(img);
+    }
+    img.src = 'data:image/png;base64,' + data.preview;
   }
-  function setNativeValue(el,value){const p=el instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;const s=Object.getOwnPropertyDescriptor(p,'value')?.set;if(s)s.call(el,value);else el.value=value;}
-  function setMask(value){const box=q('#mask-data textarea')||q('#mask-data input');if(!box)return;setNativeValue(box,value);box.dispatchEvent(new Event('input',{bubbles:true}));box.dispatchEvent(new Event('change',{bubbles:true}));}
-  function setEditor(html){const root=editorRoot();if(root)root.innerHTML=html||'';}
-  async function detect(){
-    const btn=button();if(btn?.dataset.zfBusy==='1')return;
-    const input=sourceInput();const file=input?.files?.[0];
-    console.log('[zolfox-direct-detect-v4] click',{input:!!input,file:file?.name||null});
-    if(!file){setStatus('⚠️ 请先上传图片。');return;}
-    if(btn){btn.dataset.zfBusy='1';btn.disabled=true;}
-    try{
+
+  function setNativeValue(el, value) {
+    const p = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(p, 'value')?.set;
+    if (setter) setter.call(el, value);
+    else el.value = value;
+  }
+
+  function setMask(value) {
+    const box = q('#mask-data textarea') || q('#mask-data input');
+    if (!box) {
+      console.warn('[zolfox-direct-detect-v5] mask-data textbox not found');
+      return;
+    }
+    setNativeValue(box, value);
+    box.dispatchEvent(new Event('input', {bubbles: true}));
+    box.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+
+  function setEditor(html) {
+    const root = editorRoot();
+    if (root) root.innerHTML = html || '';
+  }
+
+  async function detect(btn) {
+    if (btn?.dataset.zfBusy === '1') return;
+    const input = sourceInput();
+    const file = input?.files?.[0];
+    console.log('[zolfox-direct-detect-v5] click', {input: !!input, file: file?.name || null});
+    if (!file) {
+      setStatus('⚠️ 请先上传图片。');
+      return;
+    }
+    if (btn) {
+      btn.dataset.zfBusy = '1';
+      btn.disabled = true;
+    }
+    try {
       setStatus('⏳ 正在自动识别候选区域，请稍候…');
-      const form=new FormData();form.append('file',file,file.name||'source.png');
-      const response=await fetch(API+'?_='+Date.now(),{method:'POST',body:form,credentials:'same-origin',cache:'no-store',headers:{'Cache-Control':'no-cache'}});
-      const text=await response.text();let data;try{data=JSON.parse(text)}catch(_){throw new Error('服务器返回非 JSON：'+text.slice(0,200))}
-      if(!response.ok||!data.ok)throw new Error(data.detail||('HTTP '+response.status));
-      showPreview(data);setMask(data.mask||'');setEditor(data.editor||'');setStatus('✅ 自动识别完成：'+Number(data.pixels||0).toLocaleString()+' 个 Mask 像素。');
-      console.log('[zolfox-direct-detect-v4] success',data.width,data.height,data.pixels);
-    }catch(err){console.error('[zolfox-direct-detect-v4] failed',err);setStatus('❌ 自动识别失败：'+(err?.message||err));alert('自动识别失败：'+(err?.message||err));}
-    finally{if(btn){btn.disabled=false;delete btn.dataset.zfBusy;}}
+      const form = new FormData();
+      form.append('file', file, file.name || 'source.png');
+      const response = await fetch(API + '?_=' + Date.now(), {
+        method: 'POST',
+        body: form,
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: {'Cache-Control': 'no-cache'}
+      });
+      const text = await response.text();
+      let data;
+      try { data = JSON.parse(text); }
+      catch (_) { throw new Error('服务器返回非 JSON：' + text.slice(0, 200)); }
+      if (!response.ok || !data.ok) throw new Error(data.detail || ('HTTP ' + response.status));
+      showPreview(data);
+      setMask(data.mask || '');
+      setEditor(data.editor || '');
+      setStatus('✅ 自动识别完成：' + Number(data.pixels || 0).toLocaleString() + ' 个 Mask 像素。');
+      console.log('[zolfox-direct-detect-v5] success', data.width, data.height, data.pixels);
+    } catch (err) {
+      console.error('[zolfox-direct-detect-v5] failed', err);
+      setStatus('❌ 自动识别失败：' + (err?.message || err));
+      alert('自动识别失败：' + (err?.message || err));
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        delete btn.dataset.zfBusy;
+      }
+    }
   }
-  function intercept(e){const b=button();if(!b||!(e.target===b||b.contains(e.target)))return;e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();if(e.type==='click')detect();return false;}
-  function install(){const b=button();if(!b||b.dataset.zfDirectV4==='1')return;b.dataset.zfDirectV4='1';['pointerdown','mousedown','click'].forEach(t=>b.addEventListener(t,intercept,true));console.log('[zolfox-direct-detect-v4] installed');}
-  const observer=new MutationObserver(install);observer.observe(document.documentElement,{childList:true,subtree:true});install();
+
+  function install() {
+    const root = wrap();
+    if (!root) return;
+
+    // Replace the Gradio button with a native button. This completely removes
+    // Gradio's click listener for this control, so auto-detection never enters
+    // /gradio_api/queue/join. The AI repair button remains a normal Gradio event.
+    let btn = root.querySelector('.zf-native-auto-detect');
+    if (!btn) {
+      const old = root.querySelector('button');
+      if (!old) return;
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = old.className + ' zf-native-auto-detect';
+      btn.textContent = '✨ 自动识别候选区域';
+      btn.style.cursor = 'pointer';
+      btn.style.width = '100%';
+      btn.style.minHeight = '42px';
+      old.replaceWith(btn);
+      console.log('[zolfox-direct-detect-v5] replaced Gradio auto button');
+    }
+
+    if (btn.dataset.zfInstalled === '1') return;
+    btn.dataset.zfInstalled = '1';
+    btn.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      detect(btn);
+    });
+    console.log('[zolfox-direct-detect-v5] native button installed');
+  }
+
+  const observer = new MutationObserver(() => install());
+  observer.observe(document.documentElement, {childList: true, subtree: true});
+  install();
 })();
 </script>'''
 
 
 def create_app():
     app = FastAPI(title="ZOLFOX Tools")
+
     @app.get("/admin", include_in_schema=False)
-    def admin_root(): return RedirectResponse(url="/admin/", status_code=307)
+    def admin_root():
+        return RedirectResponse(url="/admin/", status_code=307)
+
     @app.post("/remove-watermark/api/detect")
     async def detect_api(file: UploadFile = File(...)):
         try:
-            data=await file.read()
-            if not data:return {"ok":False,"detail":"文件为空"}
-            if len(data)>25*1024*1024:return {"ok":False,"detail":"图片不能超过 25MB"}
+            data = await file.read()
+            if not data:
+                return {"ok": False, "detail": "文件为空"}
+            if len(data) > 25 * 1024 * 1024:
+                return {"ok": False, "detail": "图片不能超过 25MB"}
             return _detect_upload(data)
         except Exception as exc:
-            import traceback;traceback.print_exc();return {"ok":False,"detail":f"{type(exc).__name__}: {exc}"}
-    app=mount_gradio_app(app,admin_app.admin_app,path="/admin")
-    app=mount_gradio_app(app,tools_app.home,path="/")
-    app=mount_gradio_app(app,tools_app.remove_watermark,path="/remove-watermark")
-    app=mount_gradio_app(app,tools_app.image_compress,path="/image-compress")
+            import traceback
+            traceback.print_exc()
+            return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+
+    app = mount_gradio_app(app, admin_app.admin_app, path="/admin")
+    app = mount_gradio_app(app, tools_app.home, path="/")
+    app = mount_gradio_app(app, tools_app.remove_watermark, path="/remove-watermark")
+    app = mount_gradio_app(app, tools_app.image_compress, path="/image-compress")
     return app
 
-app=create_app()
+
+app = create_app()
+
 
 @app.middleware("http")
-async def inject_direct_detector(request,call_next):
-    response=await call_next(request)
-    if request.url.path.rstrip("/")!="/remove-watermark":return response
-    content_type=response.headers.get("content-type","")
-    if "text/html" not in content_type:return response
-    body=b"".join([chunk async for chunk in response.body_iterator])
-    script=DIRECT_DETECT_JS.encode("utf-8")
-    inserted=False
-    for marker in (b"</head>",b"</HEAD>",b"<body",b"<BODY"):
-        pos=body.find(marker)
-        if pos>=0:
-            body=body[:pos]+script+body[pos:];inserted=True;break
-    if not inserted:body+=script
-    headers=dict(response.headers);headers.pop("content-length",None);headers.pop("content-encoding",None)
-    headers["cache-control"]="no-store, no-cache, must-revalidate, max-age=0";headers["x-zolfox-direct-detect"]="v4"
-    return Response(content=body,status_code=response.status_code,headers=headers,media_type="text/html")
+async def inject_direct_detector(request, call_next):
+    response = await call_next(request)
+    if request.url.path.rstrip("/") != "/remove-watermark":
+        return response
+    content_type = response.headers.get("content-type", "")
+    if "text/html" not in content_type:
+        return response
 
-if __name__=="__main__":
-    import uvicorn;uvicorn.run(app,host="0.0.0.0",port=int(os.getenv("PORT","7860")))
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    script = DIRECT_DETECT_JS.encode("utf-8")
+    inserted = False
+    for marker in (b"</head>", b"</HEAD>", b"<body", b"<BODY"):
+        pos = body.find(marker)
+        if pos >= 0:
+            body = body[:pos] + script + body[pos:]
+            inserted = True
+            break
+    if not inserted:
+        body += script
+
+    headers = dict(response.headers)
+    headers.pop("content-length", None)
+    headers.pop("content-encoding", None)
+    headers["cache-control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    headers["x-zolfox-direct-detect"] = "v5"
+    return Response(content=body, status_code=response.status_code, headers=headers, media_type="text/html")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "7860")))
