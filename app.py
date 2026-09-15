@@ -439,23 +439,20 @@ with gr.Blocks(title='AI 图片智能修复', theme=gr.themes.Soft(), css=CSS, h
     gr.Markdown('自动识别后，下方编辑器显示原图 + 红色 Mask，可直接画笔增加或橡皮擦删除。')
     with gr.Row():
         with gr.Column():
-            source = gr.Image(label='原图', type='pil')
+            source = gr.Image(label='原图', type='pil', elem_id='wm-source')
             with gr.Row():
-                auto_btn = gr.Button('✨ 自动识别候选区域', variant='primary')
-                clear_btn = gr.Button('清除 Mask')
-            status = gr.Markdown('上传图片后开始。')
+                auto_btn = gr.Button('✨ 自动识别候选区域', variant='primary', elem_id='wm-auto-detect')
+                clear_btn = gr.Button('清除 Mask', elem_id='wm-clear-mask')
+            status = gr.Markdown('上传图片后开始。', elem_id='wm-status')
         with gr.Column():
-            preview = gr.Image(label='自动识别预览（红色=候选区域）', type='pil')
+            preview = gr.Image(label='自动识别预览（红色=候选区域）', type='pil', elem_id='wm-preview')
     gr.Markdown('## Mask 编辑器')
-    editor = gr.HTML(label='Mask 编辑器')
+    editor = gr.HTML(label='Mask 编辑器', elem_id='wm-editor')
     mask_data = gr.Textbox(label='', elem_id='mask-data', visible=True, container=False)
     restore_btn = gr.Button('🚀 AI 智能修复', variant='primary', elem_id='restore-btn')
     result = gr.Image(label='修复结果', type='pil', format='png')
 
     source.change(reset_editor, inputs=source, outputs=[editor, mask_data], queue=False)
-    # Candidate detection is a lightweight CPU/OpenCV operation. Running this
-    # event outside Gradio's queue avoids the "queue/join succeeds but nothing
-    # returns" symptom seen in some Gradio 6.x + reverse-path deployments.
     auto_btn.click(
         auto_detect,
         inputs=source,
