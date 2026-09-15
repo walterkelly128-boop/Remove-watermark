@@ -14,6 +14,9 @@ from core.detector import detect_candidates, overlay_mask
 from app import build_editor, _mask_rle
 
 
+ROUTE_VERSION = "remove-watermark-ui-v6"
+
+
 def _png_b64(image: Image.Image) -> str:
     buf = io.BytesIO()
     image.save(buf, format="PNG")
@@ -142,9 +145,6 @@ DIRECT_DETECT_JS = r'''<script id="zolfox-direct-detect-v5">
     const root = wrap();
     if (!root) return;
 
-    // Replace the Gradio button with a native button. This completely removes
-    // Gradio's click listener for this control, so auto-detection never enters
-    // /gradio_api/queue/join. The AI repair button remains a normal Gradio event.
     let btn = root.querySelector('.zf-native-auto-detect');
     if (!btn) {
       const old = root.querySelector('button');
@@ -185,6 +185,10 @@ def create_app():
     def admin_root():
         return RedirectResponse(url="/admin/", status_code=307)
 
+    @app.get("/remove-watermark/version", include_in_schema=False)
+    def remove_watermark_version():
+        return {"ok": True, "route": ROUTE_VERSION, "ui": "tools_app.remove_watermark"}
+
     @app.post("/remove-watermark/api/detect")
     async def detect_api(file: UploadFile = File(...)):
         try:
@@ -199,6 +203,9 @@ def create_app():
             traceback.print_exc()
             return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
 
+    # IMPORTANT: /remove-watermark/ must use the full UI from tools_app.remove_watermark.
+    # Do not replace this with gemini_app or app.py; the current UI contains
+    # Local LaMa, Gemini, OpenAI, mask editor, quota/session handling and AI restore.
     app = mount_gradio_app(app, admin_app.admin_app, path="/admin")
     app = mount_gradio_app(app, tools_app.home, path="/")
     app = mount_gradio_app(app, tools_app.remove_watermark, path="/remove-watermark")
@@ -221,7 +228,7 @@ async def inject_direct_detector(request, call_next):
     body = b"".join([chunk async for chunk in response.body_iterator])
     script = DIRECT_DETECT_JS.encode("utf-8")
     inserted = False
-    for marker in (b"</head>", b"</HEAD>", b"<body", b"<BODY"):
+    for marker in (b"</head>", b"</HEAD", b"<body", b"<BODY"):
         pos = body.find(marker)
         if pos >= 0:
             body = body[:pos] + script + body[pos:]
@@ -235,6 +242,7 @@ async def inject_direct_detector(request, call_next):
     headers.pop("content-encoding", None)
     headers["cache-control"] = "no-store, no-cache, must-revalidate, max-age=0"
     headers["x-zolfox-direct-detect"] = "v5"
+    headers["x-zolfox-route"] = ROUTE_VERSION
     return Response(content=body, status_code=response.status_code, headers=headers, media_type="text/html")
 
 
